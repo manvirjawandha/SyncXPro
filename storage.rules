@@ -1,0 +1,15 @@
+// storage.rules
+// Deploy with: firebase deploy --only storage
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // All document files are written by the backend (Admin SDK bypasses rules anyway)
+    // Reads require authentication — only logged-in users can access their company's documents.
+    // The backend can still generate signed URLs for sharing, but raw bucket access needs auth.
+    match /docs/{companyId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+  }
+}

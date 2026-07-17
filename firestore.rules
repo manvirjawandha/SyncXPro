@@ -1,0 +1,16 @@
+// firestore.rules
+// Deploy with: firebase deploy --only firestore:rules
+//
+// All actual access control happens in the Express backend using the
+// Firebase Admin SDK (which bypasses these rules). These rules exist as a
+// defense-in-depth layer in case anyone calls Firestore directly from a client.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny — all reads/writes must go through the authenticated backend.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
