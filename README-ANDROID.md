@@ -211,6 +211,31 @@ website in a shell.
 
 ---
 
+## App icon & splash screen
+
+The icon source files are in `assets/` (generated from `public/icon.svg`):
+`icon.png` (1024²), `icon-foreground.png` + `icon-background.png` (Android
+adaptive), and `splash.png` / `splash-dark.png`.
+
+One command turns them into every density Android and iOS need:
+
+```bash
+npm install -D @capacitor/assets
+npx capacitor-assets generate
+```
+
+That writes all the mipmap/AppIcon files straight into `android/` (and `ios/`
+if present). Re-run it if you ever change the icon. Then rebuild:
+
+```bash
+npm run sync:android
+```
+
+The website favicon and PWA icons are already wired — `public/icon-*.png`,
+`favicon.ico`, and `manifest.json` — and deploy with the normal web build.
+
+---
+
 ## Shipping to Google Play
 
 1. In Android Studio: **Build → Generate Signed Bundle / APK → Android App Bundle**

@@ -1,0 +1,25 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a1a1a" />
+      <stop offset="100%" stop-color="#000000" />
+    </linearGradient>
+  </defs>
+
+  <!-- Black background -->
+  <rect width="200" height="200" fill="url(#bgGradient)" rx="45" />
+
+  <!-- Folder -->
+  <path d="M 50 58 L 50 128 Q 50 138 60 138 L 140 138 Q 150 138 150 128 L 150 68 Q 150 58 140 58 L 90 58 L 80 48 Q 75 43 70 43 L 60 43 Q 50 43 50 53 Z" fill="white" opacity="0.95" />
+
+  <!-- Two-way sync arrows -->
+  <g stroke="#2563eb" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9">
+    <path d="M 72 88 L 128 88" />
+    <path d="M 120 80 L 128 88 L 120 96" />
+    <path d="M 128 110 L 72 110" />
+    <path d="M 80 102 L 72 110 L 80 118" />
+  </g>
+
+  <!-- Wordmark -->
+  <text x="100" y="172" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="26" letter-spacing="-0.5"><tspan fill="#ffffff">Sync</tspan><tspan fill="#2563eb">X</tspan></text>
+</svg>

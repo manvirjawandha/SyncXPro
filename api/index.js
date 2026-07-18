@@ -671,20 +671,29 @@ app.put('/api/company/drivers/:username', requireAuth, asyncHandler(async (req, 
   if (req.body.password?.trim() && req.body.password.length >= 6) { const salt = genSalt(); updates.passwordHash = hashPassword(req.body.password, salt); updates.salt = salt }
   // Pay frequency override for this driver (e.g. a monthly owner-operator in a
   // weekly fleet). Empty string clears it back to the company default.
+  //
+  // We store null (not FieldValue.delete()) for "cleared", because the mirror
+  // doc below is written with set({merge:true}), and a delete() sentinel is
+  // INVALID inside a merge-set — it throws, the mirror write fails, and the two
+  // copies drift so the list shows the stale value. null is read back as
+  // "no override" by everything that consumes it.
+  let clearing = false
   if (req.body.payFrequency !== undefined) {
     if (['weekly','biweekly','semimonthly','monthly'].includes(req.body.payFrequency)) updates.payFrequency = req.body.payFrequency
-    else if (req.body.payFrequency === '') updates.payFrequency = FieldValue.delete() // clear -> back to company default
+    else if (req.body.payFrequency === '') { updates.payFrequency = null; clearing = true }
     else return res.status(400).json({ error: 'Invalid pay frequency' })
   }
   if (Object.keys(updates).length > 0) {
     await db.collection('users').doc(uname).update(updates)
     const mirror = {}
     if (updates.name) mirror.name = updates.name
-    if (req.body.payFrequency !== undefined) mirror.payFrequency = updates.payFrequency
+    if (req.body.payFrequency !== undefined) mirror.payFrequency = updates.payFrequency // value or null
     if (Object.keys(mirror).length) {
+      // Both docs written the same way, so they can't disagree. A real failure
+      // is surfaced (500) instead of silently swallowed — a stale pay cycle is
+      // worse than an honest error the user can retry.
       await db.collection('companies').doc(user.companyId).collection('drivers').doc(uname)
         .set(mirror, { merge: true })
-        .catch(e => console.error('Driver mirror update failed for', uname, e.message))
     }
   }
   res.json({ success: true })
