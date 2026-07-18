@@ -27,3 +27,31 @@ export const S = {
   label: { display: "block", fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 6 },
   page: { padding: "16px 16px 100px" },
 }
+
+
+// ── Money ────────────────────────────────────────────────────────────────────
+// Currencies a fleet can be paid in. This is a labelling choice only —
+// SyncX Pro never converts between currencies.
+export const CURRENCIES = [
+  { code: 'USD', label: 'US Dollar (USD)', symbol: '$' },
+  { code: 'CAD', label: 'Canadian Dollar (CAD)', symbol: '$' },
+  { code: 'MXN', label: 'Mexican Peso (MXN)', symbol: '$' },
+  { code: 'EUR', label: 'Euro (EUR)', symbol: '€' },
+  { code: 'GBP', label: 'British Pound (GBP)', symbol: '£' },
+  { code: 'AUD', label: 'Australian Dollar (AUD)', symbol: '$' },
+]
+
+// Format an amount in the currency the settlement was actually issued in.
+// Falls back to USD for settlements created before currency existed.
+export function formatMoney(amount, currency = 'USD') {
+  if (amount === undefined || amount === null || isNaN(amount)) return '—'
+  try {
+    return Number(amount).toLocaleString('en-US', {
+      style: 'currency', currency: currency || 'USD',
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    })
+  } catch {
+    // Unknown code — still show the number rather than breaking the page.
+    return `${Number(amount).toFixed(2)} ${currency || ''}`.trim()
+  }
+}

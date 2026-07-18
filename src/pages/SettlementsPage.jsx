@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { S } from '../lib/constants'
+import { S, CURRENCIES, formatMoney } from '../lib/constants'
 import { api } from '../lib/api'
 
 // Pay settlements (admin + staff). Accounting uploads the settlement PDF their
@@ -7,7 +7,8 @@ import { api } from '../lib/api'
 // calculates pay. Pay period pre-fills by advancing the driver's previous
 // settlement one cycle (weekly/biweekly/semi-monthly/monthly) and stays editable.
 const FREQ_LABEL = { weekly: 'Weekly', biweekly: 'Biweekly', semimonthly: 'Semi-monthly', monthly: 'Monthly' }
-const fmtMoney = n => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+// Each settlement carries the currency it was issued in.
+const fmtMoney = (n, cur) => formatMoney(n, cur)
 const fmtDate = d => d ? new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
 const STATUS_PILL = {
@@ -106,7 +107,7 @@ function SettlementTableRow({ sett, open, onToggle, onChange, toast, isAdmin }) 
           {fmtDate(sett.periodStart)} – {fmtDate(sett.periodEnd)}
         </td>
         <td className="sx-td" style={{ color: '#6b7280', fontSize: 13, whiteSpace: 'nowrap' }}>{fmtDate(sett.depositDate)}</td>
-        <td className="sx-td" style={{ fontFamily: 'monospace', fontWeight: 700 }}>{fmtMoney(sett.amount)}</td>
+        <td className="sx-td" style={{ fontFamily: 'monospace', fontWeight: 700 }}>{fmtMoney(sett.amount, sett.currency)}</td>
         <td className="sx-td" style={{ fontSize: 13, color: '#6b7280' }}>
           {sett.uploadedBy?.name || '—'}
           {sett.uploadedBy?.department && <div style={{ fontSize: 11, color: '#9ca3af' }}>{sett.uploadedBy.department}</div>}
@@ -143,7 +144,7 @@ function SettlementRow({ sett, open, onToggle, onChange, toast, isAdmin }) {
             Uploaded by {sett.uploadedBy?.name || '—'}{sett.uploadedBy?.department ? ` (${sett.uploadedBy.department})` : ''}
           </div>
         </div>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', fontFamily: 'monospace' }}>{fmtMoney(sett.amount)}</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', fontFamily: 'monospace' }}>{fmtMoney(sett.amount, sett.currency)}</div>
         <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: pill.bg, color: pill.fg, whiteSpace: 'nowrap' }}>{pill.label}</span>
         <span style={{ color: '#d1d5db', fontSize: 14 }}>{open ? '▲' : '▼'}</span>
       </div>
@@ -250,12 +251,20 @@ export function Thread({ comments }) {
 }
 
 function UploadSettlement({ drivers, onDone, onCancel, toast, wide }) {
-  const [form, setForm] = useState({ driverUsername: '', amount: '', depositDate: '', periodStart: '', periodEnd: '' })
+  const [form, setForm] = useState({ driverUsername: '', amount: '', depositDate: '', periodStart: '', periodEnd: '', currency: 'USD' })
   const [pdf, setPdf] = useState(null) // { name, dataUrl }
   const [freq, setFreq] = useState(null)
   const [autoFilled, setAutoFilled] = useState(false)
   const [loading, setLoading] = useState(false)
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
+
+  // Start from the company's currency; still editable per settlement for the
+  // odd cross-border run.
+  useEffect(() => {
+    api.getCompanySettings()
+      .then(s => { if (s.currency) setForm(p => ({ ...p, currency: s.currency })) })
+      .catch(() => { /* keep USD default */ })
+  }, [])
 
   // Driver chosen → fetch their suggested next period (previous + one cycle).
   const chooseDriver = async (username) => {
@@ -336,8 +345,14 @@ function UploadSettlement({ drivers, onDone, onCancel, toast, wide }) {
             <input type="date" value={form.depositDate} onChange={e => set('depositDate', e.target.value)} disabled={loading} style={S.input} />
           </div>
           <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 5 }}>Amount (USD) *</div>
-            <input type="number" min="0" step="0.01" placeholder="2450.00" value={form.amount} onChange={e => set('amount', e.target.value)} disabled={loading} style={{ ...S.input, fontFamily: 'monospace' }} />
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 5 }}>Amount *</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input type="number" min="0" step="0.01" placeholder="2450.00" value={form.amount} onChange={e => set('amount', e.target.value)} disabled={loading} style={{ ...S.input, fontFamily: 'monospace', flex: 1 }} />
+              <select value={form.currency} onChange={e => set('currency', e.target.value)} disabled={loading}
+                style={{ ...S.input, width: 'auto', flex: 'none', fontWeight: 700 }}>
+                {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.code}</option>)}
+              </select>
+            </div>
           </div>
         </div>
 

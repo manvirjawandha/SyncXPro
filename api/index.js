@@ -446,6 +446,10 @@ app.get('/api/company/drivers', requireAuth, asyncHandler(async (req, res) => {
   res.json({ drivers: s.docs.map(d => d.data()) })
 }))
 
+// Currencies a fleet can be paid in. Kept to a short list on purpose — this is
+// a display/label choice, NOT conversion. SyncX Pro never converts money.
+const CURRENCIES = ['USD', 'CAD', 'MXN', 'EUR', 'GBP', 'AUD']
+
 // ── Documents ─────────────────────────────────────────────────────────────────
 // pages: [{ src: base64, corners, filterMode, brightness, contrast }, ...]
 app.post('/api/documents', requireAuth, asyncHandler(async (req, res) => {
@@ -669,14 +673,19 @@ app.put('/api/company/drivers/:username', requireAuth, asyncHandler(async (req, 
   // weekly fleet). Empty string clears it back to the company default.
   if (req.body.payFrequency !== undefined) {
     if (['weekly','biweekly','semimonthly','monthly'].includes(req.body.payFrequency)) updates.payFrequency = req.body.payFrequency
-    else if (req.body.payFrequency === '') updates.payFrequency = FieldValue.delete()
+    else if (req.body.payFrequency === '') updates.payFrequency = FieldValue.delete() // clear -> back to company default
+    else return res.status(400).json({ error: 'Invalid pay frequency' })
   }
   if (Object.keys(updates).length > 0) {
     await db.collection('users').doc(uname).update(updates)
     const mirror = {}
     if (updates.name) mirror.name = updates.name
     if (req.body.payFrequency !== undefined) mirror.payFrequency = updates.payFrequency
-    if (Object.keys(mirror).length) await db.collection('companies').doc(user.companyId).collection('drivers').doc(uname).update(mirror).catch(() => {})
+    if (Object.keys(mirror).length) {
+      await db.collection('companies').doc(user.companyId).collection('drivers').doc(uname)
+        .set(mirror, { merge: true })
+        .catch(e => console.error('Driver mirror update failed for', uname, e.message))
+    }
   }
   res.json({ success: true })
 }))
@@ -688,7 +697,16 @@ app.put('/api/company/settings', requireAuth, asyncHandler(async (req, res) => {
   if (req.body.name?.trim()) updates.name = req.body.name.trim()
   if (req.body.email?.trim()) updates.notifyEmails = req.body.email.trim()
   if (req.body.phone?.trim()) updates.phone = req.body.phone.trim()
-  if (['weekly','biweekly','semimonthly','monthly'].includes(req.body.payFrequency)) updates.payFrequency = req.body.payFrequency
+  if (req.body.payFrequency !== undefined) {
+    if (!['weekly','biweekly','semimonthly','monthly'].includes(req.body.payFrequency)) {
+      return res.status(400).json({ error: 'Invalid pay frequency' })
+    }
+    updates.payFrequency = req.body.payFrequency
+  }
+  if (req.body.currency !== undefined) {
+    if (!CURRENCIES.includes(req.body.currency)) return res.status(400).json({ error: 'Invalid currency' })
+    updates.currency = req.body.currency
+  }
   if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Nothing to update' })
   await db.collection('companies').doc(user.companyId).update(updates)
   if (updates.name || updates.notifyEmails) {
@@ -711,6 +729,9 @@ app.get('/api/company/settings', requireAuth, asyncHandler(async (req, res) => {
     notifyEmails: c.notifyEmails || '',
     phone: c.phone || '',
     docTypeEmails: c.docTypeEmails || {},
+    payFrequency: c.payFrequency || 'weekly', // was missing: the page read back
+                                              // undefined and reset to weekly
+    currency: c.currency || 'USD',
   })
 }))
 
@@ -1279,7 +1300,7 @@ app.get('/api/company/settlements/next-period/:driverUsername', requireAuth, asy
 app.post('/api/company/settlements', requireAuth, asyncHandler(async (req, res) => {
   const user = await getUser(req.auth.username)
   if (!isCompanyStaff(user)) return res.status(403).json({ error: 'Not permitted' })
-  const { driverUsername, amount, depositDate, periodStart, periodEnd, pdf } = req.body
+  const { driverUsername, amount, depositDate, periodStart, periodEnd, pdf, currency } = req.body
   if (!driverUsername) return res.status(400).json({ error: 'Choose a driver' })
   if (!periodStart || !periodEnd) return res.status(400).json({ error: 'Pay period is required' })
   if (!depositDate) return res.status(400).json({ error: 'Deposit date is required' })
@@ -1295,6 +1316,12 @@ app.post('/api/company/settlements', requireAuth, asyncHandler(async (req, res) 
   if (buf.length < 500) return res.status(400).json({ error: 'That PDF looks empty — please re-attach it' })
   if (buf.length > 10 * 1024 * 1024) return res.status(400).json({ error: 'PDF too large (10 MB max)' })
 
+  // Stamp the currency onto the settlement rather than reading the company
+  // setting at display time. A fleet that switches currency later must not
+  // silently relabel every historical settlement.
+  const cs = await db.collection('companies').doc(user.companyId).get()
+  const cur = CURRENCIES.includes(currency) ? currency : (cs.data()?.currency || 'USD')
+
   const id = randomUUID()
   const storagePath = `settlements/${user.companyId}/${id}.pdf`
   await bucket.file(storagePath).save(buf, { metadata: { contentType: 'application/pdf' } })
@@ -1302,7 +1329,7 @@ app.post('/api/company/settlements', requireAuth, asyncHandler(async (req, res) 
   const settlement = {
     id, companyId: user.companyId,
     driverUsername, driverName: ds.data().name || driverUsername,
-    amount: amt, depositDate, periodStart, periodEnd,
+    amount: amt, currency: cur, depositDate, periodStart, periodEnd,
     storagePath,
     status: 'issued', // issued -> queried -> resolved
     uploadedBy: actorTag(user),

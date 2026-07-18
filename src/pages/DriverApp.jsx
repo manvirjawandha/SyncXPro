@@ -5,7 +5,7 @@ const driverDesktopCss = `
   .dv-card:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(15,23,42,0.10); }
 `
 import { useState, useEffect, useRef } from 'react'
-import { S, DOC_TYPES, COUNTRIES, getDocType } from '../lib/constants'
+import { S, DOC_TYPES, COUNTRIES, getDocType, formatMoney } from '../lib/constants'
 import { Field, Skeleton } from '../components/Shared'
 import ScannedDoc from '../components/ScannedDoc'
 import CropEditor from '../components/CropEditor'
@@ -401,11 +401,13 @@ export default function DriverApp({ user, onLogout, toast }) {
 
   const STEPS = ['type', 'details', 'scan', 'crop', 'edit-page', 'pages']
   const SCAN_PAGES = STEPS
+  // Bottom-tab destinations: same header, no back arrow.
+  const HOME_PAGES = ['list', 'pay']
   const stepIdx = STEPS.indexOf(page)
   const PAGE_TITLES = {
-    list: `Hi, ${user.name}`, type: 'Document Type', details: 'Document Details',
+    list: `Hi, ${user.name}`, pay: `Hi, ${user.name}`, type: 'Document Type', details: 'Document Details',
     scan: pages.length > 0 ? `Add Page ${pages.length + 1}` : 'Capture Page 1',
-    crop: 'Adjust Crop', 'edit-page': `Edit Page`, pages: 'Review Pages', pay: 'My Pay',
+    crop: 'Adjust Crop', 'edit-page': `Edit Page`, pages: 'Review Pages',
   }
 
   const goBack = () => {
@@ -482,18 +484,18 @@ export default function DriverApp({ user, onLogout, toast }) {
       <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'20px 16px 0', position:'sticky', top:0, zIndex:20 }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            {page !== 'list' && <button onClick={goBack} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'white', borderRadius:10, padding:'7px 13px', cursor:'pointer', fontSize:16 }}>←</button>}
+            {!HOME_PAGES.includes(page) && <button onClick={goBack} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'white', borderRadius:10, padding:'7px 13px', cursor:'pointer', fontSize:16 }}>←</button>}
             <div>
               <div style={{ fontSize:10, color:'rgba(255,255,255,0.4)', fontWeight:700, letterSpacing:1, textTransform:'uppercase' }}>{user.companyName}</div>
               <div style={{ fontSize:17, fontWeight:800, color:'white' }}>{PAGE_TITLES[page] || 'SyncX Pro'}</div>
             </div>
           </div>
-          {page === 'list' && <button onClick={onLogout} style={{ background:'rgba(255,255,255,0.1)', border:'none', color:'rgba(255,255,255,0.6)', borderRadius:10, padding:'7px 14px', cursor:'pointer', fontSize:13, fontWeight:600 }}>Sign Out</button>}
+          <button onClick={onLogout} style={{ background:'rgba(255,255,255,0.1)', border:'none', color:'rgba(255,255,255,0.6)', borderRadius:10, padding:'7px 14px', cursor:'pointer', fontSize:13, fontWeight:600, flexShrink:0 }}>Sign Out</button>
         </div>
         {stepIdx !== -1 && <div style={{ display:'flex', gap:4, paddingBottom:14 }}>
           {STEPS.map((s, i) => <div key={s} style={{ flex:1, height:3, borderRadius:99, background:i<=stepIdx?'#3b82f6':'rgba(255,255,255,0.2)' }} />)}
         </div>}
-        {page === 'list' && <div style={{ height:14 }} />}
+        {HOME_PAGES.includes(page) && <div style={{ height:14 }} />}
       </div>
       )}
 
@@ -534,7 +536,7 @@ export default function DriverApp({ user, onLogout, toast }) {
         : S.page }>
 
         {/* Desktop-only step header, since there's no mobile back bar up top */}
-        {isTablet && page !== 'list' && (
+        {isTablet && SCAN_PAGES.includes(page) && (
           <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:20 }}>
             <button onClick={goBack} style={{ background:'white', border:'1px solid #e5e7eb', color:'#374151', borderRadius:10, padding:'8px 14px', cursor:'pointer', fontSize:13, fontWeight:700 }}>← Back</button>
             <h1 style={{ fontSize:22, fontWeight:800, color:'#0f172a', margin:0 }}>{PAGE_TITLES[page] || 'Scan'}</h1>
@@ -640,6 +642,7 @@ export default function DriverApp({ user, onLogout, toast }) {
 
         {/* MY PAY — settlements from the office */}
         {page === 'pay' && <>
+          {isTablet && <h1 style={{ fontSize:22, fontWeight:800, color:'#0f172a', margin:'0 0 20px' }}>My pay</h1>}
           {settlements.length === 0 ? (
             <div style={{ textAlign:'center', padding:'50px 20px', color:'#9ca3af' }}>
               <div style={{ fontSize:40, marginBottom:12 }}>💵</div>
@@ -655,7 +658,7 @@ export default function DriverApp({ user, onLogout, toast }) {
                   display:'flex', alignItems:'center', gap:12,
                 }}>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:17, fontWeight:800, color:'#0f172a' }}>{fmtMoney(st.amount)}</div>
+                    <div style={{ fontSize:17, fontWeight:800, color:'#0f172a' }}>{fmtMoney(st.amount, st.currency)}</div>
                     <div style={{ fontSize:12, color:'#6b7280', marginTop:3 }}>
                       {fmtDate(st.periodStart)} – {fmtDate(st.periodEnd)} · deposited {fmtDate(st.depositDate)}
                     </div>
@@ -955,9 +958,10 @@ function DriverDocDetail({ doc, onBack }) {
 
 
 // ── Pay settlement helpers (module scope) ─────────────────────────────────────
-function fmtMoney(n) {
-  if (n === undefined || n === null || isNaN(n)) return '$—'
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+// Uses the currency the settlement was issued in, not a hardcoded USD.
+function fmtMoney(n, cur) {
+  if (n === undefined || n === null || isNaN(n)) return '—'
+  return formatMoney(n, cur)
 }
 function fmtDate(d) {
   if (!d) return '—'
@@ -1009,7 +1013,7 @@ function SettlementDetail({ settlement: st, onBack, onUpdated, toast }) {
           <button onClick={onBack} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'white', borderRadius:10, padding:'7px 13px', cursor:'pointer', fontSize:16 }}>←</button>
           <div>
             <div style={{ fontSize:10, color:'rgba(255,255,255,0.4)', fontWeight:700, letterSpacing:1, textTransform:'uppercase' }}>Pay Settlement</div>
-            <div style={{ fontSize:17, fontWeight:700, color:'white' }}>{fmtMoney(local.amount)}</div>
+            <div style={{ fontSize:17, fontWeight:700, color:'white' }}>{fmtMoney(local.amount, local.currency)}</div>
           </div>
         </div>
       </div>
@@ -1020,7 +1024,7 @@ function SettlementDetail({ settlement: st, onBack, onUpdated, toast }) {
             {[
               ['Pay period', `${fmtDate(local.periodStart)} – ${fmtDate(local.periodEnd)}`],
               ['Deposited', fmtDate(local.depositDate)],
-              ['Amount', fmtMoney(local.amount)],
+              ['Amount', fmtMoney(local.amount, local.currency)],
               ['Uploaded by', local.uploadedBy?.department || local.uploadedBy?.name || 'Office'],
             ].map(([k, v]) => (
               <div key={k} style={{ background:'#f9fafb', borderRadius:10, padding:'10px 12px' }}>

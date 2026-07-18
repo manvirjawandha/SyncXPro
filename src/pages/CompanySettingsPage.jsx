@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { S, DOC_TYPES } from '../lib/constants'
+import { S, DOC_TYPES, CURRENCIES } from '../lib/constants'
 import { api } from '../lib/api'
 
 // section: 'drivers' -> driver management only
@@ -186,6 +186,7 @@ function CompanySection({ user, notify, wide = false }) {
   const [companyName, setCompanyName] = useState(user?.companyName || '')
   const [companyPhone, setCompanyPhone] = useState('')
   const [payFrequency, setPayFrequency] = useState('weekly')
+  const [currency, setCurrency] = useState('USD')
   const [defaultEmail, setDefaultEmail] = useState(user?.notifyEmails || '')
   const [routingMode, setRoutingMode] = useState('one') // 'one' | 'perType'
   const [typeEmails, setTypeEmails] = useState({}) // { docTypeId: 'email' }
@@ -200,6 +201,7 @@ function CompanySection({ user, notify, wide = false }) {
       setCompanyName(s.name || user?.companyName || '')
       setCompanyPhone(s.phone || '')
       setPayFrequency(s.payFrequency || 'weekly')
+      setCurrency(s.currency || 'USD')
       setDefaultEmail(s.notifyEmails || '')
       const te = s.docTypeEmails || {}
       setTypeEmails(te)
@@ -212,7 +214,10 @@ function CompanySection({ user, notify, wide = false }) {
   const handleSaveCompany = async () => {
     setLoading(true)
     try {
-      await api.updateCompanySettings({ name: companyName, email: defaultEmail, phone: companyPhone, payFrequency })
+      await api.updateCompanySettings({ name: companyName, email: defaultEmail, phone: companyPhone, payFrequency, currency })
+      // Read back rather than trusting local state — if the server stored
+      // something different, the form should show the truth immediately.
+      await loadSettings()
       notify('✓ Company settings saved')
     } catch (e) { notify(e.message, 'error') }
     setLoading(false)
@@ -248,6 +253,14 @@ function CompanySection({ user, notify, wide = false }) {
         <option value="semimonthly">Semi-monthly (1st–15th, 16th–end)</option>
         <option value="monthly">Monthly</option>
       </select>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 5 }}>Settlement currency</div>
+      <select value={currency} onChange={e => setCurrency(e.target.value)} disabled={loading} style={{ ...S.input, marginBottom: 6 }}>
+        {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+      </select>
+      <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 16, lineHeight: 1.5 }}>
+        Used for new settlements. Existing settlements keep the currency they were issued in.
+      </div>
       <button onClick={handleSaveCompany} disabled={loading} style={{ ...S.btn('#1a56db'), width: '100%' }}>{loading ? '⏳ Saving…' : 'Save company info'}</button>
     </div>
   )
