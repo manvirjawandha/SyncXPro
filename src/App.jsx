@@ -6,6 +6,7 @@ import DriverApp from './pages/DriverApp'
 import OpsPortal from './pages/OpsPortal'
 import ActivatePage from './pages/ActivatePage'
 import ContactPage from './pages/ContactPage'
+import ResetPage from './pages/ResetPage'
 import LandingPage from './pages/LandingPage'
 import { Toasts, useToast } from './components/Toast'
 import { api } from './lib/api'
@@ -21,7 +22,7 @@ export default function App() {
 
   useEffect(() => {
     // Don't bother checking user session on the ops/activate/contact routes
-    if (path.startsWith('/ops') || path.startsWith('/activate') || path.startsWith('/contact')) { setStage('route'); return }
+    if (path.startsWith('/ops') || path.startsWith('/activate') || path.startsWith('/contact') || path.startsWith('/reset')) { setStage('route'); return }
     // Signed-out visitors get the marketing site at "/" and the login form at "/login".
     const signedOutStage = path.startsWith('/login') ? 'login' : 'landing'
     ;(async () => {
@@ -49,6 +50,9 @@ export default function App() {
 
   // Public contact / signup request
   if (path.startsWith('/contact')) return (<><Toasts toasts={toasts} /><ContactPage toast={toast} /></>)
+
+  // Admin password reset (from emailed link)
+  if (path.startsWith('/reset')) return (<><Toasts toasts={toasts} /><ResetPage /></>)
 
   // Client activation — on success, drop them into the app as the new admin
   if (path.startsWith('/activate')) return (

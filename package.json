@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "build:driver": "vite build --config vite.config.driver.js",
     "sync:android": "npm run build:driver && npx cap sync android",
-    "open:android": "npx cap open android"
+    "open:android": "npx cap open android",
+    "sync:ios": "npm run build:driver && npx cap sync ios",
+    "open:ios": "npx cap open ios"
   },
   "dependencies": {
     "express": "^4.19.2",

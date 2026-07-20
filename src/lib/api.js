@@ -108,4 +108,15 @@ export const api = {
   async commentSettlement(id, text) { return request(`/settlements/${id}/comments`, { method: 'POST', body: JSON.stringify({ text }) }) },
   async setSettlementStatus(id, status) { return request(`/company/settlements/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }) },
   async deleteSettlement(id) { return request(`/company/settlements/${id}`, { method: 'DELETE' }) },
+
+  // ── Password reset ──
+  // Admin sets a driver's password directly (from the drivers list).
+  async adminResetDriverPassword(username, newPassword) { return request(`/company/drivers/${username}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) }) },
+  // Driver self-service via SMS OTP.
+  async driverResetRequest(username) { return request('/auth/reset/driver/request', { method: 'POST', body: JSON.stringify({ username }) }) },
+  async driverResetConfirm(payload) { return request('/auth/reset/driver/confirm', { method: 'POST', body: JSON.stringify(payload) }) },
+  // Admin self-service: email link -> OTP to company phone -> new password.
+  async adminResetRequest(email) { return request('/auth/reset/admin/request', { method: 'POST', body: JSON.stringify({ email }) }) },
+  async adminResetSendCode(token, companyId) { return request('/auth/reset/admin/send-code', { method: 'POST', body: JSON.stringify({ token, companyId }) }) },
+  async adminResetConfirm(payload) { return request('/auth/reset/admin/confirm', { method: 'POST', body: JSON.stringify(payload) }) },
 }

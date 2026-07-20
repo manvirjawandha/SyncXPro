@@ -54,6 +54,8 @@ function DriversSection({ user, notify, wide = false }) {
     setLoading(false)
   }
 
+  const [resetDriver, setResetDriver] = useState(null) // driver row we're resetting
+
   const handleDeleteDriver = async (username) => {
     if (!confirm(`Delete driver @${username}? This cannot be undone.`)) return
     setLoading(true)
@@ -135,7 +137,11 @@ function DriversSection({ user, notify, wide = false }) {
                   <td className="sx-td">
                     <PayCycleSelect driver={d} onSaved={loadDrivers} notify={notify} />
                   </td>
-                  <td className="sx-td" style={{ textAlign: 'right' }}>
+                  <td className="sx-td" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => setResetDriver(d)} disabled={loading}
+                      style={{ background: '#eff6ff', color: '#1a56db', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginRight: 6 }}>
+                      Reset password
+                    </button>
                     <button onClick={() => handleDeleteDriver(d.username)} disabled={loading}
                       style={{ background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                       Delete
@@ -170,12 +176,64 @@ function DriversSection({ user, notify, wide = false }) {
               <div style={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace' }}>@{d.username}{typeof d.docCount === 'number' ? ` · ${d.docCount} docs` : ''}</div>
               <div style={{ marginTop: 6 }}><PayCycleSelect driver={d} onSaved={loadDrivers} notify={notify} compact /></div>
             </div>
-            <button onClick={() => handleDeleteDriver(d.username)} disabled={loading}
-              style={{ background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-              Delete
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <button onClick={() => setResetDriver(d)} disabled={loading}
+                style={{ background: '#eff6ff', color: '#1a56db', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                Reset password
+              </button>
+              <button onClick={() => handleDeleteDriver(d.username)} disabled={loading}
+                style={{ background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                Delete
+              </button>
+            </div>
           </div>
         ))}
+      </div>
+
+      {resetDriver && (
+        <ResetDriverModal driver={resetDriver} notify={notify}
+          onClose={() => setResetDriver(null)} />
+      )}
+    </div>
+  )
+}
+
+// Modal: admin types a new password for a driver directly. For when a driver
+// has no phone on file (can't self-reset) or just needs the office to do it.
+function ResetDriverModal({ driver, onClose, notify }) {
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const save = async () => {
+    if (pw.length < 6) { notify('Password must be at least 6 characters', 'error'); return }
+    if (pw !== pw2) { notify('Passwords do not match', 'error'); return }
+    setLoading(true)
+    try {
+      await api.adminResetDriverPassword(driver.username, pw)
+      notify(`✓ Password reset for ${driver.name}`)
+      onClose()
+    } catch (e) { notify(e.message, 'error') }
+    setLoading(false)
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 60 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'white', borderRadius: 16, padding: 24, width: '100%', maxWidth: 380 }}>
+        <div style={{ fontSize: 16, fontWeight: 800, color: '#111827', marginBottom: 4 }}>Reset password</div>
+        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 18 }}>
+          Set a new password for <b>{driver.name}</b> (@{driver.username}). Share it with them securely — they can change it later.
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 5 }}>New password</div>
+        <input type="text" value={pw} onChange={e => setPw(e.target.value)} placeholder="At least 6 characters"
+          style={{ ...S.input, marginBottom: 12 }} disabled={loading} autoFocus />
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 5 }}>Repeat password</div>
+        <input type="text" value={pw2} onChange={e => setPw2(e.target.value)} placeholder="Repeat"
+          style={{ ...S.input, marginBottom: 18 }} disabled={loading} />
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={onClose} disabled={loading} style={{ flex: 1, background: '#f1f5f9', color: '#374151', border: 'none', borderRadius: 10, padding: '12px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={save} disabled={loading} style={{ ...S.btn('#1a56db'), flex: 1 }}>{loading ? 'Saving…' : 'Set password'}</button>
+        </div>
       </div>
     </div>
   )
@@ -223,7 +281,29 @@ function CompanySection({ user, notify, wide = false }) {
     setLoading(false)
   }
 
+  // Validate a comma-separated list of emails. Returns the first bad one, or null.
+  const findBadEmail = (str) => {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    for (const part of (str || '').split(',').map(x => x.trim()).filter(Boolean)) {
+      if (!re.test(part)) return part
+    }
+    return null
+  }
+
   const handleSaveRouting = async () => {
+    // Catch a typo in any address before it silently fails to deliver.
+    const bad = findBadEmail(defaultEmail)
+    if (bad) { notify(`"${bad}" doesn't look like a valid email`, 'error'); return }
+    if (routingMode === 'perType') {
+      for (const [id, val] of Object.entries(typeEmails)) {
+        const b = findBadEmail(val)
+        if (b) {
+          const label = DOC_TYPES.find(d => d.id === id)?.label || id
+          notify(`${label}: "${b}" doesn't look like a valid email`, 'error')
+          return
+        }
+      }
+    }
     setLoading(true)
     try {
       // In "one email for all" mode, clear all per-type overrides.
@@ -284,8 +364,8 @@ function CompanySection({ user, notify, wide = false }) {
       <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 5 }}>
         {routingMode === 'one' ? 'Email address(es)' : 'Default email (used for any type without a specific address)'}
       </div>
-      <input type="email" autoComplete="off" placeholder="admin@company.com" value={defaultEmail} onChange={e => setDefaultEmail(e.target.value)} disabled={loading} style={{ ...S.input, marginBottom: 4 }} />
-      <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 16 }}>Separate multiple emails with commas.</div>
+      <input type="text" inputMode="email" autoComplete="off" placeholder="pod@company.com, billing@company.com" value={defaultEmail} onChange={e => setDefaultEmail(e.target.value)} disabled={loading} style={{ ...S.input, marginBottom: 4 }} />
+      <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 16 }}>Send to more than one person by separating addresses with commas.</div>
 
       {routingMode === 'perType' && (
         <div style={{ marginBottom: 4 }}>
@@ -294,14 +374,14 @@ function CompanySection({ user, notify, wide = false }) {
             {DOC_TYPES.map(dt => (
               <div key={dt.id} style={{ marginBottom: wide ? 0 : 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 5 }}>{dt.icon} {dt.label}</div>
-                <input type="email" autoComplete="off"
-                  placeholder={defaultEmail ? `Default: ${defaultEmail}` : 'Uses default email'}
+                <input type="text" inputMode="email" autoComplete="off"
+                  placeholder={defaultEmail ? `e.g. ${defaultEmail}` : 'Uses default email'}
                   value={typeEmails[dt.id] || ''} onChange={e => setTypeEmail(dt.id, e.target.value)}
                   disabled={loading} style={{ ...S.input }} />
               </div>
             ))}
           </div>
-          <div style={{ fontSize: 11, color: '#9ca3af', margin: '12px 0 8px' }}>Leave a field blank to send that type to the default email above.</div>
+          <div style={{ fontSize: 11, color: '#9ca3af', margin: '12px 0 8px' }}>Blank = uses the default email. Add several addresses with commas to send that type to multiple people.</div>
         </div>
       )}
 

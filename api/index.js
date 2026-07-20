@@ -174,7 +174,12 @@ async function sendEmailNotification(doc, company, pdfBuffer) {
   const routing = company.docTypeEmails || {}
   const routed = (routing[doc.docType] || '').trim()
   const source = routed || company.notifyEmails || ''
-  const emails = source.split(',').map(s => s.trim()).filter(Boolean)
+  // Split, trim, drop blanks, lowercase, and de-duplicate — an address that
+  // appears in a list twice (or in both default and per-type) should still
+  // only get one copy.
+  const emails = [...new Set(
+    source.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  )]
   if (!emails.length) return { sent: false, reason: 'No notification emails configured for this document type' }
   const pageCount = doc.pages?.length || 1
 
@@ -1426,6 +1431,153 @@ app.delete('/api/company/settlements/:id', requireAuth, asyncHandler(async (req,
   const path = snap.data().storagePath
   if (path) await bucket.file(path).delete().catch(() => {})
   await ref.delete()
+  res.json({ success: true })
+}))
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// PASSWORD RESET
+// Three paths:
+//  1. Admin sets a driver's password directly (admin is already authenticated).
+//  2. Driver self-service reset via SMS OTP (needs a phone on file).
+//  3. Admin self-service reset: emailed link -> OTP to the company phone ->
+//     set new password. Link proves email control; OTP proves phone control.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Mask a phone for display: "+1 555 123 4567" -> "•••• ••4567"
+function maskPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '')
+  if (digits.length < 4) return '••••'
+  return '•••• ••' + digits.slice(-4)
+}
+
+// ── 1. Admin resets a driver's password directly ────────────────────────────
+app.post('/api/company/drivers/:username/reset-password', requireAuth, asyncHandler(async (req, res) => {
+  const admin = await getUser(req.auth.username)
+  if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Admin only' })
+
+  const uname = req.params.username
+  const { newPassword } = req.body
+  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
+
+  const dref = db.collection('users').doc(uname)
+  const ds = await dref.get()
+  if (!ds.exists || ds.data().role !== 'driver' || ds.data().companyId !== admin.companyId) {
+    return res.status(404).json({ error: 'Driver not found in your company' })
+  }
+
+  const salt = genSalt()
+  await dref.update({ passwordHash: hashPassword(newPassword, salt), salt })
+  res.json({ success: true })
+}))
+
+// ── 2. Driver self-service reset via SMS OTP ─────────────────────────────────
+// Step A: request a code. We look up the account, and if it has a verified
+// phone, send an OTP. To avoid leaking which usernames exist, we return the
+// same shape whether or not the user was found — only revealing a masked phone
+// when we actually sent something.
+app.post('/api/auth/reset/driver/request', asyncHandler(async (req, res) => {
+  const { username } = req.body
+  if (!username) return res.status(400).json({ error: 'Enter your username' })
+
+  const uref = db.collection('users').doc(username.trim().toLowerCase())
+  const us = await uref.get()
+  const u = us.exists ? us.data() : null
+
+  if (!u || u.role !== 'driver' || !u.phone) {
+    // Don't reveal whether the account exists or has a phone.
+    return res.json({ sent: false, reason: 'no-phone' })
+  }
+  const r = await sendVerificationCode(u.phone)
+  if (!r.ok) return res.status(400).json({ error: r.reason })
+  res.json({ sent: true, maskedPhone: maskPhone(u.phone) })
+}))
+
+// Step B: verify the code and set the new password.
+app.post('/api/auth/reset/driver/confirm', asyncHandler(async (req, res) => {
+  const { username, code, newPassword } = req.body
+  if (!username || !code || !newPassword) return res.status(400).json({ error: 'Missing required fields' })
+  if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
+
+  const uref = db.collection('users').doc(username.trim().toLowerCase())
+  const us = await uref.get()
+  const u = us.exists ? us.data() : null
+  if (!u || u.role !== 'driver' || !u.phone) return res.status(400).json({ error: 'Could not reset password' })
+
+  const check = await checkVerificationCode(u.phone, code)
+  if (!check.ok) return res.status(400).json({ error: check.reason || 'Invalid or expired code' })
+
+  const salt = genSalt()
+  await uref.update({ passwordHash: hashPassword(newPassword, salt), salt })
+  res.json({ success: true })
+}))
+
+// ── 3. Admin self-service reset: email link -> OTP -> new password ───────────
+// Step A: company requests a reset. We email a link to the company's contact
+// email with a one-time token. Always return success shape to avoid leaking
+// which companies/emails exist.
+app.post('/api/auth/reset/admin/request', asyncHandler(async (req, res) => {
+  const { email } = req.body
+  if (!email) return res.status(400).json({ error: 'Enter your company email' })
+
+  const snap = await db.collection('companies').where('contactEmail', '==', email.trim().toLowerCase()).limit(1).get()
+  if (!snap.empty) {
+    const c = snap.docs[0]
+    const token = genActivationToken()
+    await c.ref.update({ resetToken: token, resetExpiry: Date.now() + 60 * 60 * 1000 }) // 1 hour
+    const appUrl = process.env.APP_URL || `https://${req.headers.host}`
+    const link = `${appUrl}/reset?token=${token}&company=${c.id}`
+    try {
+      if (process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM_EMAIL) {
+        await sgMail.send({
+          to: c.data().contactEmail,
+          from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME || 'SyncX Pro' },
+          subject: 'Reset your SyncX Pro password',
+          text: `A password reset was requested for your SyncX Pro account.\n\nClick to continue. You'll confirm a code sent to your phone, then set a new password:\n${link}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+        })
+      }
+    } catch (e) { console.error('reset email failed', e.message) }
+  }
+  // Same response whether or not the email matched.
+  res.json({ ok: true })
+}))
+
+// Step B: link opened -> validate token, send OTP to the company phone.
+app.post('/api/auth/reset/admin/send-code', asyncHandler(async (req, res) => {
+  const { token, companyId } = req.body
+  if (!token || !companyId) return res.status(400).json({ error: 'Invalid reset link' })
+  const cs = await db.collection('companies').doc(companyId).get()
+  if (!cs.exists || cs.data().resetToken !== token) return res.status(403).json({ error: 'Invalid or used reset link' })
+  if ((cs.data().resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired' })
+
+  const phone = cs.data().contactPhone
+  if (!phone) return res.status(400).json({ error: 'No phone number on file for this company. Contact support.' })
+
+  const r = await sendVerificationCode(phone)
+  if (!r.ok) return res.status(400).json({ error: r.reason })
+  res.json({ sent: true, maskedPhone: maskPhone(phone) })
+}))
+
+// Step C: verify OTP + set new admin password, consume the token.
+app.post('/api/auth/reset/admin/confirm', asyncHandler(async (req, res) => {
+  const { token, companyId, code, newPassword } = req.body
+  if (!token || !companyId || !code || !newPassword) return res.status(400).json({ error: 'Missing required fields' })
+  if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
+
+  const cref = db.collection('companies').doc(companyId)
+  const cs = await cref.get()
+  if (!cs.exists || cs.data().resetToken !== token) return res.status(403).json({ error: 'Invalid or used reset link' })
+  if ((cs.data().resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired' })
+
+  const check = await checkVerificationCode(cs.data().contactPhone, code)
+  if (!check.ok) return res.status(400).json({ error: check.reason || 'Invalid or expired code' })
+
+  const salt = genSalt()
+  await db.collection('users').doc(cs.data().adminUsername).update({
+    passwordHash: hashPassword(newPassword, salt), salt,
+  })
+  // Consume the token so the link can't be reused.
+  await cref.update({ resetToken: FieldValue.delete(), resetExpiry: FieldValue.delete() })
   res.json({ success: true })
 }))
 

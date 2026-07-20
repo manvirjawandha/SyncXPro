@@ -577,12 +577,21 @@ export default function DriverApp({ user, onLogout, toast }) {
             </div>
           )}
 
-          <div style={{ marginBottom:16 }}>
-            <div style={{ background:'white', borderRadius:14, padding:'14px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)', display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ marginBottom:16, display:'flex', alignItems:'center', gap:12 }}>
+            <div style={{ flex:1, background:'white', borderRadius:14, padding:'14px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)', display:'flex', alignItems:'center', gap:12 }}>
               <div style={{ fontSize:24, fontWeight:800, color:'#1a56db' }}>{docs.length}</div>
               <div style={{ fontSize:13, color:'#6b7280', fontWeight:600 }}>Document{docs.length!==1?'s':''} Submitted</div>
             </div>
+            {/* Desktop: compact button in the header row — a full-width bar across
+                a wide page reads as "mobile stretched onto desktop". */}
+            {isTablet && docs.length > 0 && (
+              <button onClick={() => setPage('type')} style={S.btn('#1a56db', { width:'auto', padding:'13px 22px', flex:'none' })}>+ Scan / Upload Document</button>
+            )}
           </div>
+
+          {/* Mobile: full-width action pinned above the list so it never drifts
+              down the page as documents accumulate. */}
+          {!isTablet && docs.length > 0 && <button onClick={() => setPage('type')} style={{ ...S.btn('#1a56db'), width:'100%', marginBottom:14 }}>+ Scan / Upload Document</button>}
 
           {loading ? [1,2,3].map(i => <Skeleton key={i} h={80} />) :
            docs.length === 0 ? (
@@ -618,7 +627,6 @@ export default function DriverApp({ user, onLogout, toast }) {
           })}
           </div>
           )}
-          {docs.length > 0 && <button onClick={() => setPage('type')} style={{ ...S.btn('#1a56db'), width:'100%', marginTop:isTablet?16:6 }}>+ Scan / Upload Document</button>}
         </>}
 
         {/* STEP 1: TYPE */}

@@ -22,8 +22,8 @@ export default defineConfig({
   // The website calls /api on its own origin, so VITE_API_URL is empty there.
   // The app has no origin — it MUST call the API absolutely. Baked in here so
   // the two builds can never fight over a single .env value.
-  // Override when testing:
-  //   SYNCX_API_URL=https://doc-pro-v2.vercel.app npm run build:driver
+  // Points at the live custom domain. Override per-build for testing:
+  //   SYNCX_API_URL=https://syncxv16.vercel.app npm run build:driver
   define: {
     'import.meta.env.VITE_API_URL': JSON.stringify(
       process.env.SYNCX_API_URL || 'https://syncxpro.com'

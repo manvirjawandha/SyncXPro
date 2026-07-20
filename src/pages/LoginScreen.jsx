@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { S } from '../lib/constants'
 import { Field } from '../components/Shared'
 import { api } from '../lib/api'
+import ForgotPassword from './ForgotPassword'
 
 function LogoWrap({ native, children }) {
   if (native) return <div>{children}</div>
@@ -90,6 +91,8 @@ export default function LoginScreen({ onLogin, native = false }) {
   }
 
   return (
+    <>
+    {tab === 'forgot' ? <ForgotPassword native={native} onBack={() => setTab('login')} /> : (
     <div style={{ minHeight:'100vh', background:'linear-gradient(160deg,#0f172a 0%,#1e3a5f 55%,#0f172a 100%)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24 }}>
       {/* Logo */}
       <div style={{ textAlign:'center', marginBottom:28 }}>
@@ -130,6 +133,11 @@ export default function LoginScreen({ onLogin, native = false }) {
             <button onClick={handleLogin} disabled={loading} style={{ ...S.btn('#1a56db'), width:'100%', opacity:loading?.7:1 }}>
               {loading ? 'Signing in…' : 'Sign In →'}
             </button>
+            <div style={{ textAlign:'center', marginTop:12 }}>
+              <button onClick={() => setTab('forgot')} style={{ background:'none', border:'none', color:'#6b7280', cursor:'pointer', fontWeight:600, fontSize:13, textDecoration:'underline' }}>
+                Forgot password?
+              </button>
+            </div>
             <div style={{ textAlign:'center', fontSize:13, color:'#9ca3af', marginTop:16 }}>
               No account?{' '}
               <button onClick={() => setTab('signup')} style={{ background:'none', border:'none', color:'#1a56db', cursor:'pointer', fontWeight:700, fontSize:13 }}>
@@ -230,5 +238,7 @@ export default function LoginScreen({ onLogin, native = false }) {
         )}
       </div>
     </div>
+    )}
+    </>
   )
 }
