@@ -423,6 +423,15 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
   }
   if (!user || !user.passwordHash || hashPassword(password, user.salt) !== user.passwordHash)
     return res.status(401).json({ error: 'Incorrect username or password' })
+  // If the user's company has been marked inactive (non-payment / policy), block
+  // login with a clear message that points them to support. Drivers and admins
+  // of that company are both stopped.
+  if (user.companyId) {
+    const cs = await db.collection('companies').doc(user.companyId).get()
+    if (cs.exists && cs.data().status === 'inactive') {
+      return res.status(403).json({ error: 'ACCOUNT_INACTIVE', inactive: true })
+    }
+  }
   const { passwordHash, salt, ...safe } = user
   res.json({ token: signToken(user.username), user: safe })
 }))
@@ -448,7 +457,20 @@ app.get('/api/company/drivers', requireAuth, asyncHandler(async (req, res) => {
   const user = await getUser(req.auth.username)
   if (!isCompanyStaff(user)) return res.status(403).json({ error: 'Not permitted' })
   const s = await db.collection('companies').doc(user.companyId).collection('drivers').get()
-  res.json({ drivers: s.docs.map(d => d.data()) })
+  // The mirror doc can drift from the authoritative users doc (past bugs, or a
+  // driver created before a field existed). Read payFrequency straight from the
+  // users doc so the admin UI always shows the true override, and normalize
+  // missing/null to '' so the dropdown correctly shows "Company default".
+  const drivers = await Promise.all(s.docs.map(async d => {
+    const data = d.data()
+    try {
+      const us = await db.collection('users').doc(data.username).get()
+      const pf = us.exists ? us.data().payFrequency : null
+      data.payFrequency = pf || '' // '' = company default
+    } catch { data.payFrequency = data.payFrequency || '' }
+    return data
+  }))
+  res.json({ drivers })
 }))
 
 // Currencies a fleet can be paid in. Kept to a short list on purpose — this is
@@ -1094,6 +1116,125 @@ Log in to the Ops Portal to review and create their account.
 }))
 
 // Operator: list signup requests
+
+// ── Ops: company detail, edit, status, driver management ─────────────────────
+
+// Full company detail including its driver list (for the ops drill-in view).
+app.get('/api/ops/companies/:id', requireOps, asyncHandler(async (req, res) => {
+  const cs = await db.collection('companies').doc(req.params.id).get()
+  if (!cs.exists) return res.status(404).json({ error: 'Company not found' })
+  const c = cs.data()
+  const ds = await db.collection('companies').doc(req.params.id).collection('drivers').get()
+  // Enrich each driver with authoritative fields from the users doc.
+  const drivers = await Promise.all(ds.docs.map(async d => {
+    const data = d.data()
+    try {
+      const us = await db.collection('users').doc(data.username).get()
+      if (us.exists) { const u = us.data(); data.phone = u.phone || ''; data.email = u.email || ''; data.name = u.name || data.name }
+    } catch {}
+    return data
+  }))
+  res.json({ company: { id: cs.id, ...c }, drivers })
+}))
+
+// Edit company profile (name, contact email/phone).
+app.put('/api/ops/companies/:id', requireOps, asyncHandler(async (req, res) => {
+  const cref = db.collection('companies').doc(req.params.id)
+  const cs = await cref.get()
+  if (!cs.exists) return res.status(404).json({ error: 'Company not found' })
+  const updates = {}
+  if (req.body.name !== undefined) {
+    if (!String(req.body.name).trim()) return res.status(400).json({ error: 'Company name required' })
+    updates.name = String(req.body.name).trim()
+  }
+  if (req.body.contactEmail !== undefined) {
+    const em = String(req.body.contactEmail).trim().toLowerCase()
+    if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return res.status(400).json({ error: 'Invalid email' })
+    updates.contactEmail = em
+  }
+  if (req.body.contactPhone !== undefined) updates.contactPhone = String(req.body.contactPhone).trim()
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' })
+  await cref.update(updates)
+  // Keep the admin user's companyName in sync if the name changed.
+  if (updates.name && cs.data().adminUsername) {
+    await db.collection('users').doc(cs.data().adminUsername).update({ companyName: updates.name }).catch(() => {})
+  }
+  res.json({ success: true })
+}))
+
+// Toggle company status active <-> inactive (non-payment / policy violation).
+app.put('/api/ops/companies/:id/status', requireOps, asyncHandler(async (req, res) => {
+  const cref = db.collection('companies').doc(req.params.id)
+  const cs = await cref.get()
+  if (!cs.exists) return res.status(404).json({ error: 'Company not found' })
+  const status = req.body.status
+  if (!['active', 'inactive'].includes(status)) return res.status(400).json({ error: 'Invalid status' })
+  // Don't clobber a pending (not-yet-activated) company.
+  if (cs.data().status === 'pending') return res.status(400).json({ error: 'Company has not activated yet' })
+  await cref.update({ status })
+  res.json({ success: true })
+}))
+
+// Ops resets a driver's password directly.
+app.post('/api/ops/drivers/:username/reset-password', requireOps, asyncHandler(async (req, res) => {
+  const uname = req.params.username.toLowerCase()
+  const ds = await db.collection('users').doc(uname).get()
+  if (!ds.exists || ds.data().role !== 'driver') return res.status(404).json({ error: 'Driver not found' })
+  const { newPassword } = req.body
+  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
+  const salt = genSalt()
+  await db.collection('users').doc(uname).update({ passwordHash: hashPassword(newPassword, salt), salt })
+  res.json({ success: true })
+}))
+
+// Ops edits a driver's email/phone directly.
+app.put('/api/ops/drivers/:username', requireOps, asyncHandler(async (req, res) => {
+  const uname = req.params.username.toLowerCase()
+  const uref = db.collection('users').doc(uname)
+  const ds = await uref.get()
+  if (!ds.exists || ds.data().role !== 'driver') return res.status(404).json({ error: 'Driver not found' })
+  const updates = {}
+  if (req.body.name !== undefined && String(req.body.name).trim()) updates.name = String(req.body.name).trim()
+  if (req.body.email !== undefined) {
+    const em = String(req.body.email).trim().toLowerCase()
+    if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return res.status(400).json({ error: 'Invalid email' })
+    updates.email = em
+  }
+  if (req.body.phone !== undefined) updates.phone = normalizePhone(req.body.phone) || String(req.body.phone).trim()
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' })
+  await uref.update(updates)
+  if (updates.name && ds.data().companyId) {
+    await db.collection('companies').doc(ds.data().companyId).collection('drivers').doc(uname).set({ name: updates.name }, { merge: true }).catch(() => {})
+  }
+  res.json({ success: true })
+}))
+
+// Ops sends a driver a password-reset link to their email. The link lands on
+// the same driver reset flow (OTP to their phone, then new password).
+app.post('/api/ops/drivers/:username/send-reset', requireOps, asyncHandler(async (req, res) => {
+  const uname = req.params.username.toLowerCase()
+  const ds = await db.collection('users').doc(uname).get()
+  if (!ds.exists || ds.data().role !== 'driver') return res.status(404).json({ error: 'Driver not found' })
+  const u = ds.data()
+  if (!u.email) return res.status(400).json({ error: 'This driver has no email on file. Add one first, or reset the password directly.' })
+  if (!u.phone) return res.status(400).json({ error: 'This driver has no phone on file for OTP verification.' })
+  const token = genActivationToken()
+  await db.collection('users').doc(uname).update({ resetToken: token, resetExpiry: Date.now() + 60 * 60 * 1000 })
+  const appUrl = process.env.APP_URL || `https://${req.headers.host}`
+  const link = `${appUrl}/reset?token=${token}&driver=${encodeURIComponent(uname)}`
+  try {
+    if (process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM_EMAIL) {
+      await sgMail.send({
+        to: u.email,
+        from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME || 'SyncX Pro' },
+        subject: 'Reset your SyncX Pro password',
+        text: `A password reset was requested for your SyncX Pro driver account.\n\nClick to continue — you'll confirm a code sent to your phone, then set a new password:\n${link}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+      })
+    }
+  } catch (e) { console.error('driver reset email', e.message) }
+  res.json({ sent: true })
+}))
+
 app.get('/api/ops/requests', requireOps, asyncHandler(async (req, res) => {
   const s = await db.collection('signupRequests').orderBy('createdAt', 'desc').get()
   res.json({ requests: s.docs.map(d => d.data()) })
@@ -1544,6 +1685,37 @@ app.post('/api/auth/reset/admin/request', asyncHandler(async (req, res) => {
 }))
 
 // Step B: link opened -> validate token, send OTP to the company phone.
+
+// Driver reset via emailed LINK (from ops "send reset link"). Token in the
+// link; OTP goes to the driver's phone; then they set a new password.
+app.post('/api/auth/reset/driver-link/send-code', asyncHandler(async (req, res) => {
+  const { token, driver } = req.body
+  if (!token || !driver) return res.status(400).json({ error: 'Invalid reset link' })
+  const ds = await db.collection('users').doc(String(driver).toLowerCase()).get()
+  if (!ds.exists || ds.data().resetToken !== token) return res.status(403).json({ error: 'Invalid or used reset link' })
+  if ((ds.data().resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired' })
+  const phone = ds.data().phone
+  if (!phone) return res.status(400).json({ error: 'No phone on file for verification. Contact support.' })
+  const r = await sendVerificationCode(phone)
+  if (!r.ok) return res.status(400).json({ error: r.reason })
+  res.json({ sent: true, maskedPhone: maskPhone(phone) })
+}))
+
+app.post('/api/auth/reset/driver-link/confirm', asyncHandler(async (req, res) => {
+  const { token, driver, code, newPassword } = req.body
+  if (!token || !driver || !code || !newPassword) return res.status(400).json({ error: 'Missing required fields' })
+  if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
+  const uref = db.collection('users').doc(String(driver).toLowerCase())
+  const ds = await uref.get()
+  if (!ds.exists || ds.data().resetToken !== token) return res.status(403).json({ error: 'Invalid or used reset link' })
+  if ((ds.data().resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired' })
+  const check = await checkVerificationCode(ds.data().phone, code)
+  if (!check.ok) return res.status(400).json({ error: check.reason || 'Invalid or expired code' })
+  const salt = genSalt()
+  await uref.update({ passwordHash: hashPassword(newPassword, salt), salt, resetToken: FieldValue.delete(), resetExpiry: FieldValue.delete() })
+  res.json({ success: true })
+}))
+
 app.post('/api/auth/reset/admin/send-code', asyncHandler(async (req, res) => {
   const { token, companyId } = req.body
   if (!token || !companyId) return res.status(400).json({ error: 'Invalid reset link' })
