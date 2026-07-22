@@ -463,6 +463,7 @@ app.post('/api/documents', requireAuth, asyncHandler(async (req, res) => {
 
   const { docType, docNumber, gpsLocation, pages, requestId } = req.body
   if (!docType) return res.status(400).json({ error: 'Document type required' })
+  if (!docNumber || !String(docNumber).trim()) return res.status(400).json({ error: 'Document number required' })
   if (!pages?.length) return res.status(400).json({ error: 'At least one page required' })
   if (pages.length > 20) return res.status(400).json({ error: 'Maximum 20 pages per document' })
 
@@ -1578,6 +1579,68 @@ app.post('/api/auth/reset/admin/confirm', asyncHandler(async (req, res) => {
   })
   // Consume the token so the link can't be reused.
   await cref.update({ resetToken: FieldValue.delete(), resetExpiry: FieldValue.delete() })
+  res.json({ success: true })
+}))
+
+
+// ── Driver self-service profile ──────────────────────────────────────────────
+// The driver edits their own name/email directly. Phone changes require OTP
+// (verify they control the new number) — same Twilio flow as signup/reset.
+
+app.get('/api/driver/profile', requireAuth, asyncHandler(async (req, res) => {
+  const u = await getUser(req.auth.username)
+  if (!u || u.role !== 'driver') return res.status(403).json({ error: 'Drivers only' })
+  res.json({ name: u.name || '', phone: u.phone || '', email: u.email || '', username: u.username })
+}))
+
+// Update name and/or email in one call (no verification needed for these).
+app.put('/api/driver/profile', requireAuth, asyncHandler(async (req, res) => {
+  const u = await getUser(req.auth.username)
+  if (!u || u.role !== 'driver') return res.status(403).json({ error: 'Drivers only' })
+
+  const updates = {}
+  if (req.body.name !== undefined) {
+    const name = String(req.body.name).trim()
+    if (name.length < 2) return res.status(400).json({ error: 'Name is too short' })
+    updates.name = name
+  }
+  if (req.body.email !== undefined) {
+    const email = String(req.body.email).trim().toLowerCase()
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email address' })
+    updates.email = email
+  }
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing to update' })
+
+  await db.collection('users').doc(u.username).update(updates)
+  // Mirror the name into the company drivers list so it stays in sync.
+  if (updates.name) {
+    await db.collection('companies').doc(u.companyId).collection('drivers').doc(u.username)
+      .set({ name: updates.name }, { merge: true }).catch(e => console.error('name mirror', e.message))
+  }
+  res.json({ success: true })
+}))
+
+// Phone change step 1: send an OTP to the NEW number.
+app.post('/api/driver/profile/phone/request', requireAuth, asyncHandler(async (req, res) => {
+  const u = await getUser(req.auth.username)
+  if (!u || u.role !== 'driver') return res.status(403).json({ error: 'Drivers only' })
+  const phone = normalizePhone(req.body.phone || '')
+  if (!phone) return res.status(400).json({ error: 'Enter a valid phone number' })
+  const r = await sendVerificationCode(phone)
+  if (!r.ok) return res.status(400).json({ error: r.reason })
+  res.json({ sent: true })
+}))
+
+// Phone change step 2: verify the code, then save the new number.
+app.post('/api/driver/profile/phone/confirm', requireAuth, asyncHandler(async (req, res) => {
+  const u = await getUser(req.auth.username)
+  if (!u || u.role !== 'driver') return res.status(403).json({ error: 'Drivers only' })
+  const phone = normalizePhone(req.body.phone || '')
+  const { code } = req.body
+  if (!phone || !code) return res.status(400).json({ error: 'Missing phone or code' })
+  const check = await checkVerificationCode(phone, code)
+  if (!check.ok) return res.status(400).json({ error: check.reason || 'Invalid or expired code' })
+  await db.collection('users').doc(u.username).update({ phone })
   res.json({ success: true })
 }))
 
