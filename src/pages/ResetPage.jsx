@@ -11,6 +11,8 @@ export default function ResetPage({ onDone }) {
   const params = new URLSearchParams(window.location.search)
   const token = params.get('token') || ''
   const companyId = params.get('company') || ''
+  const driver = params.get('driver') || ''
+  const isDriver = !!driver // driver reset link vs company/admin reset link
 
   const [step, setStep] = useState('start') // start | code | done | invalid
   const [maskedPhone, setMaskedPhone] = useState('')
@@ -21,13 +23,16 @@ export default function ResetPage({ onDone }) {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!token || !companyId) setStep('invalid')
+    // Valid if we have a token AND either a company (admin) or driver target.
+    if (!token || (!companyId && !driver)) setStep('invalid')
   }, [])
 
   const sendCode = async () => {
     setErr(''); setLoading(true)
     try {
-      const r = await api.adminResetSendCode(token, companyId)
+      const r = isDriver
+        ? await api.driverLinkSendCode(token, driver)
+        : await api.adminResetSendCode(token, companyId)
       if (r.sent) { setMaskedPhone(r.maskedPhone); setStep('code') }
       else setErr('Could not send a code.')
     } catch (e) { setErr(e.message) }
@@ -40,7 +45,8 @@ export default function ResetPage({ onDone }) {
     if (pw !== pw2) { setErr('Passwords do not match'); return }
     setErr(''); setLoading(true)
     try {
-      await api.adminResetConfirm({ token, companyId, code: code.trim(), newPassword: pw })
+      if (isDriver) await api.driverLinkConfirm({ token, driver, code: code.trim(), newPassword: pw })
+      else await api.adminResetConfirm({ token, companyId, code: code.trim(), newPassword: pw })
       setStep('done')
     } catch (e) { setErr(e.message) }
     setLoading(false)

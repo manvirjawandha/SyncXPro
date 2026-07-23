@@ -41,6 +41,18 @@ try {
 }
 const FieldValue = admin.firestore.FieldValue
 
+// Canonical public base URL for links we email out (activation, password
+// resets). We deliberately do NOT trust req.headers.host: on Vercel that can be
+// a *.vercel.app deploy domain, which produces links that break once that
+// deployment/domain goes away. APP_URL wins, unless it's a vercel.app value.
+const CANONICAL_APP_URL = 'https://syncxpro.com'
+function appBaseUrl() {
+  const v = (process.env.APP_URL || '').trim().replace(/\/+$/, '')
+  if (!v || /vercel\.app$/i.test(v)) return CANONICAL_APP_URL
+  return v
+}
+
+
 // Wraps an async route handler so any thrown error/rejected promise reaches
 // Express's error-handling middleware instead of hanging the request.
 // Express 4 does NOT catch errors thrown inside async functions on its own.
@@ -888,7 +900,7 @@ app.post('/api/ops/companies/create', requireOps, asyncHandler(async (req, res) 
   })
 
   // Email the activation link to the client
-  const appUrl = process.env.APP_URL || `https://${req.headers.host}`
+  const appUrl = appBaseUrl()
   const activationLink = `${appUrl}/activate?token=${activationToken}&company=${cId}`
   let emailSent = false, emailError = null
   try {
@@ -943,7 +955,7 @@ app.post('/api/ops/companies/:id/resend-activation', requireOps, asyncHandler(as
   const activationExpiry = Date.now() + 1000 * 60 * 60 * 24 * 7
   await db.collection('companies').doc(c.id).update({ activationToken, activationExpiry })
 
-  const appUrl = process.env.APP_URL || `https://${req.headers.host}`
+  const appUrl = appBaseUrl()
   const activationLink = `${appUrl}/activate?token=${activationToken}&company=${c.id}`
   let emailSent = false, emailError = null
   try {
@@ -1220,19 +1232,25 @@ app.post('/api/ops/drivers/:username/send-reset', requireOps, asyncHandler(async
   if (!u.phone) return res.status(400).json({ error: 'This driver has no phone on file for OTP verification.' })
   const token = genActivationToken()
   await db.collection('users').doc(uname).update({ resetToken: token, resetExpiry: Date.now() + 60 * 60 * 1000 })
-  const appUrl = process.env.APP_URL || `https://${req.headers.host}`
+  const appUrl = appBaseUrl()
   const link = `${appUrl}/reset?token=${token}&driver=${encodeURIComponent(uname)}`
+  let emailSent = false, emailError = null
   try {
-    if (process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM_EMAIL) {
+    if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
+      emailError = 'SendGrid not configured'
+    } else {
       await sgMail.send({
         to: u.email,
         from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME || 'SyncX Pro' },
         subject: 'Reset your SyncX Pro password',
-        text: `A password reset was requested for your SyncX Pro driver account.\n\nClick to continue — you'll confirm a code sent to your phone, then set a new password:\n${link}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+        text: `A password reset was requested for your SyncX Pro driver account.\n\nClick to continue — you'll confirm a code sent to your phone, then set a new password:\n${link}\n\nThis link expires in 1 hour, and sending a new reset email replaces this one. If you didn't request this, ignore this email.`,
       })
+      emailSent = true
     }
-  } catch (e) { console.error('driver reset email', e.message) }
-  res.json({ sent: true })
+  } catch (e) { emailError = e.message; console.error('driver reset email', e.message) }
+  // Return the link too, so ops can copy it if the email didn't go out —
+  // reporting a bare success when SendGrid failed hid real problems.
+  res.json({ sent: emailSent, emailError, link })
 }))
 
 app.get('/api/ops/requests', requireOps, asyncHandler(async (req, res) => {
@@ -1662,15 +1680,35 @@ app.post('/api/auth/reset/admin/request', asyncHandler(async (req, res) => {
   const { email } = req.body
   if (!email) return res.status(400).json({ error: 'Enter your company email' })
 
-  const snap = await db.collection('companies').where('contactEmail', '==', email.trim().toLowerCase()).limit(1).get()
-  if (!snap.empty) {
-    const c = snap.docs[0]
+  // Accept EITHER the company contact email OR the admin username — people
+  // reach for whichever they remember, and a silent miss looks like a broken
+  // feature. Also fall back to a case-insensitive scan: the exact-match query
+  // misses any record whose contactEmail was stored with different casing
+  // (older signups, contact-form entries), which is the usual reason this
+  // "stops working" for a company that used to receive the email fine.
+  const input = String(email).trim().toLowerCase()
+  let c = null
+  const snap = await db.collection('companies').where('contactEmail', '==', input).limit(1).get()
+  if (!snap.empty) c = snap.docs[0]
+  if (!c) {
+    const all = await db.collection('companies').get()
+    c = all.docs.find(d => {
+      const v = d.data()
+      return String(v.contactEmail || '').trim().toLowerCase() === input
+        || String(v.adminUsername || '').trim().toLowerCase() === input
+    }) || null
+  }
+  let serviceError = false
+  if (c) {
     const token = genActivationToken()
     await c.ref.update({ resetToken: token, resetExpiry: Date.now() + 60 * 60 * 1000 }) // 1 hour
-    const appUrl = process.env.APP_URL || `https://${req.headers.host}`
+    const appUrl = appBaseUrl()
     const link = `${appUrl}/reset?token=${token}&company=${c.id}`
     try {
-      if (process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM_EMAIL) {
+      if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
+        serviceError = true
+        console.error('admin reset: SendGrid not configured')
+      } else {
         await sgMail.send({
           to: c.data().contactEmail,
           from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME || 'SyncX Pro' },
@@ -1678,10 +1716,14 @@ app.post('/api/auth/reset/admin/request', asyncHandler(async (req, res) => {
           text: `A password reset was requested for your SyncX Pro account.\n\nClick to continue. You'll confirm a code sent to your phone, then set a new password:\n${link}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
         })
       }
-    } catch (e) { console.error('reset email failed', e.message) }
+    } catch (e) { serviceError = true; console.error('admin reset email failed for', c.id, e.message) }
+  } else {
+    console.warn('admin reset: no company matched input')
   }
-  // Same response whether or not the email matched.
-  res.json({ ok: true })
+  // Response stays the same whether or not an account matched (no account
+  // enumeration). serviceError only reports an account-wide email problem,
+  // which reveals nothing about whether the address exists.
+  res.json({ ok: true, serviceError })
 }))
 
 // Step B: link opened -> validate token, send OTP to the company phone.
@@ -1692,9 +1734,15 @@ app.post('/api/auth/reset/driver-link/send-code', asyncHandler(async (req, res) 
   const { token, driver } = req.body
   if (!token || !driver) return res.status(400).json({ error: 'Invalid reset link' })
   const ds = await db.collection('users').doc(String(driver).toLowerCase()).get()
-  if (!ds.exists || ds.data().resetToken !== token) return res.status(403).json({ error: 'Invalid or used reset link' })
-  if ((ds.data().resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired' })
-  const phone = ds.data().phone
+  if (!ds.exists) return res.status(404).json({ error: 'Account not found' })
+  const d = ds.data()
+  // Distinguish the failure cases — "invalid or used" for everything hid real
+  // causes. A newer link supersedes older ones, which is the usual reason a
+  // link "stops working" after re-sending.
+  if (!d.resetToken) return res.status(403).json({ error: 'This reset link is no longer active. Ask for a new one.' })
+  if (d.resetToken !== token) return res.status(403).json({ error: 'This link was replaced by a newer reset email. Please use the most recent one.' })
+  if ((d.resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired. Ask for a new one.' })
+  const phone = d.phone
   if (!phone) return res.status(400).json({ error: 'No phone on file for verification. Contact support.' })
   const r = await sendVerificationCode(phone)
   if (!r.ok) return res.status(400).json({ error: r.reason })
@@ -1707,9 +1755,12 @@ app.post('/api/auth/reset/driver-link/confirm', asyncHandler(async (req, res) =>
   if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
   const uref = db.collection('users').doc(String(driver).toLowerCase())
   const ds = await uref.get()
-  if (!ds.exists || ds.data().resetToken !== token) return res.status(403).json({ error: 'Invalid or used reset link' })
-  if ((ds.data().resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired' })
-  const check = await checkVerificationCode(ds.data().phone, code)
+  if (!ds.exists) return res.status(404).json({ error: 'Account not found' })
+  const d2 = ds.data()
+  if (!d2.resetToken) return res.status(403).json({ error: 'This reset link is no longer active. Ask for a new one.' })
+  if (d2.resetToken !== token) return res.status(403).json({ error: 'This link was replaced by a newer reset email. Please use the most recent one.' })
+  if ((d2.resetExpiry || 0) < Date.now()) return res.status(403).json({ error: 'This reset link has expired. Ask for a new one.' })
+  const check = await checkVerificationCode(d2.phone, code)
   if (!check.ok) return res.status(400).json({ error: check.reason || 'Invalid or expired code' })
   const salt = genSalt()
   await uref.update({ passwordHash: hashPassword(newPassword, salt), salt, resetToken: FieldValue.delete(), resetExpiry: FieldValue.delete() })

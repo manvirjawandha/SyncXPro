@@ -90,7 +90,7 @@ export default function DriverShell() {
     <>
       <Toasts toasts={toasts} />
       {stage === 'login' && <LoginScreen onLogin={handleLogin} native />}
-      {stage === 'app' && user && <DriverApp user={user} onLogout={handleLogout} toast={toast} />}
+      {stage === 'app' && user && <DriverApp user={user} onLogout={handleLogout} toast={toast} onUserUpdate={(patch) => setUser(u => ({ ...u, ...patch }))} />}
     </>
   )
 }

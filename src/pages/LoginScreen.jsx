@@ -19,6 +19,7 @@ export default function LoginScreen({ onLogin, native = false }) {
   const [loading, setLoading] = useState(false)
   const [signupStep, setSignupStep] = useState('details') // details -> verify (OTP) -> (create)
   const [codeSent, setCodeSent] = useState(false)
+  const [inactiveBlock, setInactiveBlock] = useState(false)
 
   const set = (k, v) => { setFields(p => ({...p, [k]: v})); setErrors(p => ({...p, [k]: ''})) }
 
@@ -32,7 +33,8 @@ export default function LoginScreen({ onLogin, native = false }) {
       const data = await api.login(fields.username.trim(), fields.password)
       onLogin(data.user)
     } catch (err) {
-      setErrors({ password: err.message })
+      if (/ACCOUNT_INACTIVE/i.test(err.message)) setInactiveBlock(true)
+      else setErrors({ password: err.message })
     }
     setLoading(false)
   }
@@ -90,10 +92,26 @@ export default function LoginScreen({ onLogin, native = false }) {
     setLoading(false)
   }
 
+  if (inactiveBlock) {
+    return (
+      <div style={{ minHeight:'100vh', background:'linear-gradient(160deg,#0f172a 0%,#1e3a5f 55%,#0f172a 100%)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24, fontFamily:'system-ui,sans-serif' }}>
+        <div style={{ width:'100%', maxWidth:400, background:'white', borderRadius:16, padding:'32px 24px', textAlign:'center' }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🔒</div>
+          <div style={{ fontSize:19, fontWeight:800, color:'#0f172a', marginBottom:10 }}>Account Inactive</div>
+          <p style={{ fontSize:14, color:'#4b5563', lineHeight:1.6, marginBottom:20 }}>
+            Your account has been marked Inactive. Please contact support.
+          </p>
+          <a href="/contact" style={{ ...S.btn('#1a56db'), display:'block', textDecoration:'none', textAlign:'center', marginBottom:10 }}>Contact support</a>
+          <button onClick={() => { setInactiveBlock(false); setFields(p => ({ ...p, password:'' })) }} style={{ background:'none', border:'none', color:'#6b7280', fontSize:13, fontWeight:600, cursor:'pointer' }}>← Back to sign in</button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
     {tab === 'forgot' ? <ForgotPassword native={native} onBack={() => setTab('login')} /> : (
-    <div style={{ minHeight:'100vh', background:'linear-gradient(160deg,#0f172a 0%,#1e3a5f 55%,#0f172a 100%)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24 }}>
+    <div style={{ minHeight:'100vh', height:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch', background:'linear-gradient(160deg,#0f172a 0%,#1e3a5f 55%,#0f172a 100%)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'calc(env(safe-area-inset-top) + 24px) 24px calc(env(safe-area-inset-bottom) + 40px)' }}>
       {/* Logo */}
       <div style={{ textAlign:'center', marginBottom:28 }}>
         <LogoWrap native={native}>

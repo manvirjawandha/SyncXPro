@@ -5,18 +5,30 @@
     <!-- user-scalable=no is correct here: this is an app, not a web page. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0f172a" />
-    <title>SyncX Driver</title>
+    <title>SyncX Pro Driver</title>
     <style>
       * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-      html, body { overscroll-behavior-y: none; }
+
+      /* Lock the page to the screen like a native app: the window itself never
+         scrolls or rubber-bands. Only the content region inside #root scrolls,
+         so headers and the bottom tab bar stay pinned. */
+      html, body {
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+        position: fixed;
+        width: 100%;
+      }
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: #f1f5f9;
-        padding-top: env(safe-area-inset-top);
-        padding-bottom: env(safe-area-inset-bottom);
+        background: #0f172a; /* navy so the top notch area matches the header */
+        /* NOTE: no safe-area padding here — headers use env(safe-area-inset-top)
+           and the tab bar uses env(safe-area-inset-bottom), so adding it to body
+           too would double the offset. */
       }
-      /* Do not width-cap #root — DriverApp centres itself. */
-      #root { min-height: 100vh; }
+      /* #root fills the screen; DriverApp manages its own internal scrolling. */
+      #root { height: 100%; overflow: hidden; }
+
       input, select, textarea, button { font-family: inherit; }
       a { color: inherit; }
     </style>

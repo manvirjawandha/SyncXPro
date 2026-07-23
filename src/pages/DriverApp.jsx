@@ -9,6 +9,7 @@ import { S, DOC_TYPES, COUNTRIES, getDocType, formatMoney } from '../lib/constan
 import { Field, Skeleton } from '../components/Shared'
 import ScannedDoc from '../components/ScannedDoc'
 import CropEditor from '../components/CropEditor'
+import DriverSettings from './DriverSettings'
 import { api } from '../lib/api'
 import { compressImage, imageSizeMB, MAX_IMAGE_SIZE_MB } from '../lib/imageUtils'
 import { isNative, isOnline, capturePhoto, pickPhoto, getPosition, scanDocumentPages } from '../lib/native'
@@ -130,7 +131,7 @@ async function applyFiltersToImage(base64, corners, filterMode, brightness, cont
   })
 }
 
-export default function DriverApp({ user, onLogout, toast }) {
+export default function DriverApp({ user, onLogout, toast, onUserUpdate }) {
   const { isTablet } = useBreakpoints()
   const [page, setPage] = useState('list')
   const [docs, setDocs] = useState([])
@@ -142,6 +143,16 @@ export default function DriverApp({ user, onLogout, toast }) {
   const [docNumber, setDocNumber] = useState('')
   const [gpsLocation, setGpsLocation] = useState(null)
   const [gpsLoading, setGpsLoading] = useState(false)
+
+  // Auto-capture location the moment the driver reaches the details step — no
+  // button press. If it fails (dead zone, denied), the manual button stays as a
+  // Retry fallback. We only auto-try once per capture so we don't spam GPS.
+  // Search + filter for the document list.
+  const [search, setSearch] = useState('')
+  const [filterType, setFilterType] = useState('') // '' = all types
+  const [showFilter, setShowFilter] = useState(false)
+
+  const gpsAutoTried = useRef(false)
   const [rawImage, setRawImage] = useState(null)
   const [imageWarning, setImageWarning] = useState('')
   const [cropData, setCropData] = useState(null)
@@ -150,7 +161,12 @@ export default function DriverApp({ user, onLogout, toast }) {
   const [pages, setPages] = useState([]) // [{src, corners, filterMode, brightness, contrast}]
   const [editingPageIndex, setEditingPageIndex] = useState(null) // which page we're editing
 
-  const [submitting, setSubmitting] = useState(false)
+
+  // Documents currently uploading in the background. Each entry shows as a
+  // pending row at the top of the list so the driver can leave the scan flow
+  // immediately instead of watching a "generating…" screen.
+  //   { tempId, docType, docNumber, status: 'uploading'|'failed', payload, error }
+  const [pendingUploads, setPendingUploads] = useState([])
 
   // Pay settlements uploaded by the office for this driver.
   const [settlements, setSettlements] = useState([])
@@ -161,6 +177,37 @@ export default function DriverApp({ user, onLogout, toast }) {
   const [activeRequest, setActiveRequest] = useState(null) // the request being fulfilled, if any
 
   useEffect(() => { loadDocs(); loadRequests(); loadSettlements() }, [])
+
+  // Pull-to-refresh: reload everything the driver can see, in parallel.
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshAll = async () => {
+    setRefreshing(true)
+    try { await Promise.all([loadDocs(), loadRequests(), loadSettlements()]) }
+    finally { setRefreshing(false) }
+  }
+
+  // Touch gesture for pull-to-refresh. Only on the list and pay pages — there's
+  // nothing to refresh on Settings, and the scan flow shouldn't refresh either.
+  const ptrStartY = useRef(null)
+  const [ptrPull, setPtrPull] = useState(0)
+  const PTR_THRESHOLD = 65
+  const ptrEnabled = (page === 'list' || page === 'pay') // NOT settings, NOT scan flow
+  const ptrTouchStart = (e) => {
+    if (!ptrEnabled) { ptrStartY.current = null; return }
+    ptrStartY.current = e.currentTarget.scrollTop <= 0 ? e.touches[0].clientY : null
+  }
+  const ptrTouchMove = (e) => {
+    if (!ptrEnabled || ptrStartY.current == null || refreshing) return
+    const dy = e.touches[0].clientY - ptrStartY.current
+    if (dy > 0) {
+      if (e.cancelable) e.preventDefault()
+      setPtrPull(Math.min(dy * 0.5, PTR_THRESHOLD + 20))
+    }
+  }
+  const ptrTouchEnd = async () => {
+    if (ptrEnabled && ptrStartY.current != null && ptrPull >= PTR_THRESHOLD && !refreshing) await refreshAll()
+    setPtrPull(0); ptrStartY.current = null
+  }
 
   const loadDocs = async () => {
     setLoading(true)
@@ -220,6 +267,17 @@ export default function DriverApp({ user, onLogout, toast }) {
       return { city, state, country, label: label || null }
     } catch { return null }
   }
+
+  // Fire the automatic location grab once, when the details step first shows.
+  useEffect(() => {
+    if (page === 'details' && !gpsLocation && !gpsLoading && !gpsAutoTried.current) {
+      gpsAutoTried.current = true
+      captureGPS()
+    }
+    // Reset the "auto-tried" flag whenever we leave the capture flow, so the
+    // next document gets a fresh automatic attempt.
+    if (page === 'type' || page === 'list') gpsAutoTried.current = false
+  }, [page])
 
   const captureGPS = async () => {
     setGpsLoading(true)
@@ -347,48 +405,77 @@ export default function DriverApp({ user, onLogout, toast }) {
 
   const handleSubmit = async () => {
     if (!pages.length) { toast('Add at least one page', 'error'); return }
-    setSubmitting(true)
-    try {
-      // Dead zones are normal in this job. On a device, if there's no signal we
-      // save the whole submission to the phone and upload it automatically the
-      // moment signal returns — the driver walks away and it just happens.
-      if (isNative() && !(await isOnline())) {
-        await enqueue({ docType, docNumber: docNumber.trim(), gpsLocation, pages, requestId: activeRequest?.id || null })
-        toast('📥 Saved. It will upload automatically when you have signal.', 'info')
-        resetFlow()
-        setSubmitting(false)
-        return
-      }
 
-      const data = await api.submitDocument({ docType, docNumber: docNumber.trim(), gpsLocation, pages, requestId: activeRequest?.id || null })
-      if (data.pdfError || data.pdfGenerated === false) {
-        toast(`⚠ Submitted, but the PDF didn't generate. Please retake the pages and resubmit.`, 'warning')
-      } else if (data.emailSent) {
-        toast(`✓ Submitted! PDF emailed to admin`, 'success')
-      } else if (data.emailError) {
-        toast(`✓ Document submitted, but email failed: ${data.emailError}`, 'warning')
-      } else {
-        toast(`✓ Document submitted`, 'success')
-      }
+    const payload = { docType, docNumber: docNumber.trim(), gpsLocation, pages, requestId: activeRequest?.id || null }
+
+    // Offline: queue and leave, exactly as before — the offline queue already
+    // uploads automatically when signal returns.
+    if (isNative() && !(await isOnline())) {
+      await enqueue(payload)
+      toast('📥 Saved. It will upload automatically when you have signal.', 'info')
       resetFlow()
+      return
+    }
+
+    // Online: don't block on PDF generation + upload. Drop a pending row into
+    // the list, return to the main screen immediately, and finish in the
+    // background. This is what stops the app "getting stuck on generating &
+    // submitting" — the heavy work no longer holds the UI hostage.
+    const tempId = 'pending_' + Date.now()
+    setPendingUploads(prev => [{ tempId, docType: payload.docType, docNumber: payload.docNumber, status: 'uploading', payload }, ...prev])
+    resetFlow()
+    setPage('list')
+    runUpload(tempId, payload)
+  }
+
+  // Background uploader with a hard timeout so it can NEVER spin forever. On
+  // success the pending row disappears and the real document loads in; on
+  // failure it flips to a "Failed — retry" row the driver can tap.
+  const runUpload = async (tempId, payload) => {
+    const withTimeout = (p, ms) => Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), ms)),
+    ])
+    try {
+      const data = await withTimeout(api.submitDocument(payload), 90000) // 90s ceiling
+      if (data.pdfError || data.pdfGenerated === false) {
+        toast('⚠ Submitted, but the PDF didn\'t generate. Please retake and resubmit.', 'warning')
+      } else if (data.emailSent) {
+        toast('✓ Submitted — PDF emailed to admin', 'success')
+      } else if (data.emailError) {
+        toast(`✓ Submitted, but email failed: ${data.emailError}`, 'warning')
+      } else {
+        toast('✓ Document submitted', 'success')
+      }
+      // Done: drop the pending row and pull the real list.
+      setPendingUploads(prev => prev.filter(u => u.tempId !== tempId))
       await Promise.all([loadDocs(), loadRequests()])
     } catch (e) {
-      // Signal can die mid-upload — that's a network failure, not a bad scan.
-      // Queue it rather than making the driver photograph everything again.
-      // Real server rejections (validation, auth) still surface as errors.
       const msg = String(e?.message || '')
+      // Lost signal mid-upload → hand off to the offline queue and clear the row.
       if (isNative() && /failed to fetch|network|timed? out|load failed/i.test(msg)) {
         try {
-          await enqueue({ docType, docNumber: docNumber.trim(), gpsLocation, pages, requestId: activeRequest?.id || null })
+          await enqueue(payload)
           toast('📥 Lost signal — saved. It will upload automatically.', 'info')
-          resetFlow()
-          setSubmitting(false)
+          setPendingUploads(prev => prev.filter(u => u.tempId !== tempId))
           return
-        } catch { /* fall through to the error toast below */ }
+        } catch { /* fall through to failed state */ }
       }
+      // Real failure → mark the row so the driver can retry without rescanning.
+      setPendingUploads(prev => prev.map(u => u.tempId === tempId ? { ...u, status: 'failed', error: msg || 'Upload failed' } : u))
       toast(msg || 'Could not submit', 'error')
     }
-    setSubmitting(false)
+  }
+
+  const retryUpload = (tempId) => {
+    const u = pendingUploads.find(x => x.tempId === tempId)
+    if (!u) return
+    setPendingUploads(prev => prev.map(x => x.tempId === tempId ? { ...x, status: 'uploading', error: null } : x))
+    runUpload(tempId, u.payload)
+  }
+
+  const discardUpload = (tempId) => {
+    setPendingUploads(prev => prev.filter(u => u.tempId !== tempId))
   }
 
   const resetFlow = () => {
@@ -402,10 +489,10 @@ export default function DriverApp({ user, onLogout, toast }) {
   const STEPS = ['type', 'details', 'scan', 'crop', 'edit-page', 'pages']
   const SCAN_PAGES = STEPS
   // Bottom-tab destinations: same header, no back arrow.
-  const HOME_PAGES = ['list', 'pay']
+  const HOME_PAGES = ['list', 'pay', 'settings']
   const stepIdx = STEPS.indexOf(page)
   const PAGE_TITLES = {
-    list: `Hi, ${user.name}`, pay: `Hi, ${user.name}`, type: 'Document Type', details: 'Document Details',
+    list: `Hi, ${user.name}`, pay: `Hi, ${user.name}`, settings: 'Settings', type: 'Document Type', details: 'Document Details',
     scan: pages.length > 0 ? `Add Page ${pages.length + 1}` : 'Capture Page 1',
     crop: 'Adjust Crop', 'edit-page': `Edit Page`, pages: 'Review Pages',
   }
@@ -431,8 +518,30 @@ export default function DriverApp({ user, onLogout, toast }) {
   if (viewDoc) return <DriverDocDetail doc={viewDoc} onBack={() => { setViewDoc(null); loadDocs() }} />
 
   return (
-    <div style={{ minHeight:'100vh', background:'#f1f5f9', maxWidth:isTablet?'none':600, margin:'0 auto', fontFamily:'system-ui,sans-serif' }}>
+    <div
+      onTouchStart={ptrTouchStart}
+      onTouchMove={ptrTouchMove}
+      onTouchEnd={ptrTouchEnd}
+      style={{ height:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch', overscrollBehavior:'none', background:'#f1f5f9', maxWidth:isTablet?'none':600, margin:'0 auto', fontFamily:'system-ui,sans-serif', position:'relative' }}>
       <style>{driverDesktopCss}</style>
+      <style>{`@keyframes ptr-spin { to { transform: rotate(360deg) } }`}</style>
+      {/* Pull-to-refresh spinner. Positioned as a FIXED overlay near the top so
+          it floats over the content while the driver pulls — it does NOT push
+          the sticky header down. Only the body scrolls; the header stays put. */}
+      {(refreshing || ptrPull > 8) && !isTablet && ptrEnabled && (
+        <div style={{
+          position:'fixed', top:`calc(env(safe-area-inset-top) + 56px)`, left:0, right:0, zIndex:15,
+          display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none',
+        }}>
+          <div style={{
+            width:34, height:34, borderRadius:'50%', background:'white',
+            boxShadow:'0 2px 8px rgba(15,23,42,0.15)', display:'flex', alignItems:'center', justifyContent:'center',
+            transform:`translateY(${refreshing ? 0 : Math.min(ptrPull - 20, 0)}px)`, transition: refreshing ? 'transform 0.2s' : 'none',
+          }}>
+            <div style={{ width:18, height:18, borderRadius:'50%', border:'2.5px solid #cbd5e1', borderTopColor:'#1a56db', animation: refreshing ? 'ptr-spin 0.7s linear infinite' : 'none', transform: refreshing ? 'none' : `rotate(${ptrPull*3}deg)` }} />
+          </div>
+        </div>
+      )}
       <input id="inp-camera" type="file" accept="image/*" capture="environment" onChange={handleFile}
         style={{ position:'fixed', left:-9999, width:1, height:1, opacity:0 }} />
       <input id="inp-gallery" type="file" accept="image/*" onChange={handleFile}
@@ -440,7 +549,7 @@ export default function DriverApp({ user, onLogout, toast }) {
 
       {/* ── Desktop: full-width site header ── */}
       {isTablet && (
-        <header style={{ background:'#0f172a', position:'sticky', top:0, zIndex:20, borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+        <header style={{ background:'#0f172a', position:'sticky', top:0, zIndex:20, borderBottom:'1px solid rgba(255,255,255,0.08)', paddingTop:'env(safe-area-inset-top)' }}>
           <div style={{ maxWidth:1100, margin:'0 auto', padding:'0 32px', height:60, display:'flex', alignItems:'center', gap:24 }}>
             <div style={{ display:'flex', alignItems:'baseline', gap:10, flexShrink:0 }}>
               <span style={{ fontSize:19, fontWeight:800, color:'white', letterSpacing:-0.3 }}>SyncX Pro</span>
@@ -481,7 +590,7 @@ export default function DriverApp({ user, onLogout, toast }) {
 
       {/* ── Mobile: the original app header ── */}
       {!isTablet && (
-      <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'20px 16px 0', position:'sticky', top:0, zIndex:20 }}>
+      <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'calc(env(safe-area-inset-top) + 8px) 16px 0', position:'sticky', top:0, zIndex:20 }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             {!HOME_PAGES.includes(page) && <button onClick={goBack} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'white', borderRadius:10, padding:'7px 13px', cursor:'pointer', fontSize:16 }}>←</button>}
@@ -490,7 +599,8 @@ export default function DriverApp({ user, onLogout, toast }) {
               <div style={{ fontSize:17, fontWeight:800, color:'white' }}>{PAGE_TITLES[page] || 'SyncX Pro'}</div>
             </div>
           </div>
-          <button onClick={onLogout} style={{ background:'rgba(255,255,255,0.1)', border:'none', color:'rgba(255,255,255,0.6)', borderRadius:10, padding:'7px 14px', cursor:'pointer', fontSize:13, fontWeight:600, flexShrink:0 }}>Sign Out</button>
+          {/* Sign Out moved to the Settings tab — this space is reserved for a
+              notification bell when push notifications land. */}
         </div>
         {stepIdx !== -1 && <div style={{ display:'flex', gap:4, paddingBottom:14 }}>
           {STEPS.map((s, i) => <div key={s} style={{ flex:1, height:3, borderRadius:99, background:i<=stepIdx?'#3b82f6':'rgba(255,255,255,0.2)' }} />)}
@@ -499,28 +609,31 @@ export default function DriverApp({ user, onLogout, toast }) {
       </div>
       )}
 
-      {/* Mobile: bottom tabs. Pay is its own destination, not a card buried in
-          the documents list. Hidden during the scan flow to keep it focused. */}
-      {!isTablet && (page === 'list' || page === 'pay') && (
+      {/* Mobile: bottom tabs. Light bar (premium, not heavy) with a bold
+          navy pill behind the active tab and crisp line icons. */}
+      {!isTablet && (page === 'list' || page === 'pay' || page === 'settings') && (
         <div style={{
-          position:'fixed', bottom:0, left:0, right:0, zIndex:30, display:'flex',
-          background:'white', borderTop:'1px solid #e5e7eb',
-          paddingBottom:'env(safe-area-inset-bottom)',
-          boxShadow:'0 -2px 12px rgba(0,0,0,0.06)',
+          position:'fixed', bottom:0, left:0, right:0, zIndex:30, display:'flex', gap:4,
+          background:'rgba(255,255,255,0.96)', backdropFilter:'blur(12px)', WebkitBackdropFilter:'blur(12px)',
+          borderTop:'1px solid #eef2f7',
+          padding:'8px 10px calc(env(safe-area-inset-bottom) + 8px)',
+          boxShadow:'0 -4px 20px rgba(15,23,42,0.08)',
         }}>
-          {[['list','📄','Documents'],['pay','💵','My Pay']].map(([id, icon, label]) => {
+          {[['list','Documents'],['pay','My Pay'],['settings','Settings']].map(([id, label]) => {
             const on = page === id
             const dot = id === 'pay' && settlements.some(x => x.status === 'queried')
             return (
               <button key={id} onClick={() => setPage(id)} style={{
-                flex:1, background:'transparent', border:'none', cursor:'pointer',
-                padding:'10px 0 12px', display:'flex', flexDirection:'column', alignItems:'center', gap:3,
-                color: on ? '#1a56db' : '#9ca3af', fontSize:11, fontWeight:700,
-                borderTop:`2px solid ${on ? '#1a56db' : 'transparent'}`, marginTop:-1,
+                flex:1, background: on ? 'linear-gradient(135deg,#0f172a,#1e3a5f)' : 'transparent',
+                border:'none', cursor:'pointer', borderRadius:14,
+                padding:'8px 0 7px', display:'flex', flexDirection:'column', alignItems:'center', gap:3,
+                color: on ? '#ffffff' : '#94a3b8', fontSize:11, fontWeight:on?800:600,
+                transition:'background 0.18s, color 0.18s',
+                boxShadow: on ? '0 4px 12px rgba(15,23,42,0.25)' : 'none',
               }}>
-                <span style={{ fontSize:19, position:'relative' }}>
-                  {icon}
-                  {dot && <span style={{ position:'absolute', top:-1, right:-5, width:7, height:7, borderRadius:7, background:'#e02424' }} />}
+                <span style={{ position:'relative', display:'flex', alignItems:'center', justifyContent:'center', height:24 }}>
+                  <TabIcon id={id} active={on} />
+                  {dot && <span style={{ position:'absolute', top:-2, right:-6, width:8, height:8, borderRadius:8, background:'#f43f5e', border:'1.5px solid white' }} />}
                 </span>
                 {label}
               </button>
@@ -577,33 +690,109 @@ export default function DriverApp({ user, onLogout, toast }) {
             </div>
           )}
 
-          <div style={{ marginBottom:16, display:'flex', alignItems:'center', gap:12 }}>
-            <div style={{ flex:1, background:'white', borderRadius:14, padding:'14px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)', display:'flex', alignItems:'center', gap:12 }}>
-              <div style={{ fontSize:24, fontWeight:800, color:'#1a56db' }}>{docs.length}</div>
-              <div style={{ fontSize:13, color:'#6b7280', fontWeight:600 }}>Document{docs.length!==1?'s':''} Submitted</div>
-            </div>
-            {/* Desktop: compact button in the header row — a full-width bar across
-                a wide page reads as "mobile stretched onto desktop". */}
-            {isTablet && docs.length > 0 && (
+          {/* Desktop: scan button on its own, right-aligned. (The "N documents
+              submitted" counter was removed — the list itself shows the count.) */}
+          {isTablet && docs.length > 0 && (
+            <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
               <button onClick={() => setPage('type')} style={S.btn('#1a56db', { width:'auto', padding:'13px 22px', flex:'none' })}>+ Scan / Upload Document</button>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Mobile: full-width action pinned above the list so it never drifts
               down the page as documents accumulate. */}
           {!isTablet && docs.length > 0 && <button onClick={() => setPage('type')} style={{ ...S.btn('#1a56db'), width:'100%', marginBottom:14 }}>+ Scan / Upload Document</button>}
 
+          {/* Search + type filter. Only shown once there are documents to sift. */}
+          {docs.length > 0 && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ display:'flex', gap:8 }}>
+                <div style={{ flex:1, position:'relative' }}>
+                  <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', color:'#9ca3af', fontSize:15 }}>🔍</span>
+                  <input value={search} onChange={e => setSearch(e.target.value)}
+                    placeholder="Search by number or date…"
+                    style={{ ...S.input, paddingLeft:36, background:'white' }} />
+                </div>
+                <button onClick={() => setShowFilter(v => !v)} title="Filter by type"
+                  style={{ flex:'none', width:46, borderRadius:12, border:'1px solid #e5e7eb',
+                    background: filterType ? '#1a56db' : 'white', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                    stroke={filterType ? '#ffffff' : '#6b7280'} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Type filter chips — toggled by the filter icon. */}
+              {showFilter && (
+                <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:10 }}>
+                  <FilterChip label="All types" active={!filterType} onClick={() => setFilterType('')} />
+                  {DOC_TYPES.map(dt => (
+                    <FilterChip key={dt.id} label={`${dt.icon} ${dt.label}`} active={filterType === dt.id} onClick={() => setFilterType(filterType === dt.id ? '' : dt.id)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Pending uploads — documents submitting in the background. They sit
+              at the top so the driver sees progress without being trapped on a
+              "generating…" screen. */}
+          {pendingUploads.map(u => {
+            const dt = getDocType(u.docType)
+            const failed = u.status === 'failed'
+            return (
+              <div key={u.tempId} style={{ background:'white', borderRadius:16, marginBottom:isTablet?0:10, overflow:'hidden', display:'flex', alignItems:'stretch', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border: failed ? '1px solid #fecaca' : '1px solid #bfdbfe' }}>
+                <div style={{ width:5, background: failed ? '#ef4444' : '#3b82f6', flexShrink:0 }} />
+                <div style={{ flex:1, padding:'12px 14px', display:'flex', alignItems:'center', gap:12 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:14, fontWeight:700 }}>{dt.icon} {dt.label}</div>
+                    <div style={{ fontFamily:'monospace', fontSize:12, color:'#6b7280', marginTop:3 }}>{u.docNumber || 'No number'}</div>
+                    <div style={{ fontSize:12, fontWeight:700, marginTop:5, color: failed ? '#dc2626' : '#1d4ed8', display:'flex', alignItems:'center', gap:6 }}>
+                      {failed ? '⚠ Upload failed' : <><span style={{ display:'inline-block', width:12, height:12, borderRadius:'50%', border:'2px solid #bfdbfe', borderTopColor:'#1d4ed8', animation:'ptr-spin 0.7s linear infinite' }} /> Uploading…</>}
+                    </div>
+                  </div>
+                  {failed && (
+                    <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                      <button onClick={() => retryUpload(u.tempId)} style={{ background:'#1a56db', color:'white', border:'none', borderRadius:8, padding:'6px 12px', fontSize:12, fontWeight:700, cursor:'pointer' }}>Retry</button>
+                      <button onClick={() => discardUpload(u.tempId)} style={{ background:'#f1f5f9', color:'#6b7280', border:'none', borderRadius:8, padding:'6px 12px', fontSize:12, fontWeight:700, cursor:'pointer' }}>Discard</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
           {loading ? [1,2,3].map(i => <Skeleton key={i} h={80} />) :
            docs.length === 0 ? (
+            pendingUploads.length === 0 && (
             <div style={{ textAlign:'center', padding:'50px 20px', color:'#9ca3af' }}>
               <div style={{ fontSize:48, marginBottom:12 }}>📂</div>
               <div style={{ fontWeight:700, color:'#374151', fontSize:17 }}>No documents yet</div>
               <div style={{ fontSize:13, marginTop:6, marginBottom:24 }}>Scan your first document to get started</div>
               <button onClick={() => setPage('type')} style={S.btn('#1a56db', { width:'auto', padding:'13px 28px', flex:'none' })}>+ Scan Document</button>
             </div>
-           ) : (
+            )
+           ) : (() => {
+            // Apply the search text (matches document number or formatted date)
+            // and the type filter to what's rendered.
+            const q = search.trim().toLowerCase()
+            const filtered = docs.filter(doc => {
+              if (filterType && doc.docType !== filterType) return false
+              if (!q) return true
+              const num = (doc.docNumber || '').toLowerCase()
+              const dateStr = doc.submittedAt ? new Date(doc.submittedAt).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }).toLowerCase() : ''
+              return num.includes(q) || dateStr.includes(q)
+            })
+            if (filtered.length === 0) return (
+              <div style={{ textAlign:'center', padding:'40px 20px', color:'#9ca3af' }}>
+                <div style={{ fontSize:36, marginBottom:10 }}>🔍</div>
+                <div style={{ fontWeight:700, color:'#374151', fontSize:15 }}>No matching documents</div>
+                <div style={{ fontSize:13, marginTop:4 }}>Try a different search or filter</div>
+              </div>
+            )
+            return (
            <div style={{ display:'grid', gridTemplateColumns: isTablet ? '1fr 1fr' : '1fr', gap: isTablet ? 12 : 0 }}>
-           {docs.map(doc => {
+           {filtered.map(doc => {
             const dt = getDocType(doc.docType)
             return (
               <div key={doc.id} onClick={() => setViewDoc(doc)} className="dv-card" style={{ background:'white', borderRadius:16, marginBottom:isTablet?0:10, overflow:'hidden', display:'flex', alignItems:'stretch', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', cursor:'pointer' }}>
@@ -626,7 +815,7 @@ export default function DriverApp({ user, onLogout, toast }) {
             )
           })}
           </div>
-          )}
+          )})()}
         </>}
 
         {/* STEP 1: TYPE */}
@@ -649,6 +838,10 @@ export default function DriverApp({ user, onLogout, toast }) {
         </>}
 
         {/* MY PAY — settlements from the office */}
+        {page === 'settings' && (
+          <DriverSettings user={user} toast={toast} onLogout={onLogout} isTablet={isTablet} onUserUpdate={onUserUpdate} />
+        )}
+
         {page === 'pay' && <>
           {isTablet && <h1 style={{ fontSize:22, fontWeight:800, color:'#0f172a', margin:'0 0 20px' }}>My pay</h1>}
           {settlements.length === 0 ? (
@@ -697,16 +890,21 @@ export default function DriverApp({ user, onLogout, toast }) {
           )}
 
           <div style={S.card({ marginBottom:14 })}>
-            <Field label="Document Number">
+            <Field label="Document Number *">
               <input style={{ ...S.input, fontFamily:'monospace', letterSpacing:1, textTransform:'uppercase' }}
                 value={docNumber} onChange={e => setDocNumber(e.target.value.toUpperCase())} placeholder="e.g. A12345678" />
             </Field>
+            <div style={{ fontSize:11, color:'#9ca3af', marginTop:6, lineHeight:1.5 }}>
+              Required. If the document has no number, use the truck or trailer number.
+            </div>
           </div>
           
-          <div style={S.card({ marginBottom:14, background:gpsLocation?'#f0fdf4':'#fef3c7', border:gpsLocation?'1px solid #86efac':'1px solid #fcd34d' })}>
-            <div style={{ fontSize:13, fontWeight:700, color:gpsLocation?'#166534':'#92400e', marginBottom:12 }}>
-              {gpsLocation ? '✓ Location Captured' : '📍 Capture Location'}
+          <div style={S.card({ marginBottom:14, background:gpsLocation?'#f0fdf4':gpsLoading?'#eff6ff':'#fef3c7', border:gpsLocation?'1px solid #86efac':gpsLoading?'1px solid #93c5fd':'1px solid #fcd34d' })}>
+            <div style={{ fontSize:13, fontWeight:700, color:gpsLocation?'#166534':gpsLoading?'#1e40af':'#92400e', marginBottom:gpsLocation||gpsLoading?12:0, display:'flex', alignItems:'center', gap:8 }}>
+              {gpsLoading && <span style={{ display:'inline-block', width:14, height:14, borderRadius:'50%', border:'2px solid #bfdbfe', borderTopColor:'#1a56db', animation:'ptr-spin 0.7s linear infinite' }} />}
+              {gpsLocation ? '✓ Location captured automatically' : gpsLoading ? 'Getting your location…' : '⚠ Location not captured'}
             </div>
+            <style>{`@keyframes ptr-spin { to { transform: rotate(360deg) } }`}</style>
             {gpsLocation && (
               <div style={{ marginBottom:12 }}>
                 {gpsLocation.label && (
@@ -719,12 +917,24 @@ export default function DriverApp({ user, onLogout, toast }) {
                 </div>
               </div>
             )}
-            <button onClick={captureGPS} disabled={gpsLoading} style={{ ...S.btn(gpsLocation?'#0e9f6e':'#1a56db'), width:'100%', fontSize:14 }}>
-              {gpsLoading ? '⏳ Getting location...' : gpsLocation ? '↻ Recapture Location' : '📍 Capture My Location'}
-            </button>
+            {/* Button only appears as a retry — when GPS failed, or to refresh a
+                stale fix. During the automatic attempt we just show the spinner. */}
+            {!gpsLoading && (
+              <button onClick={captureGPS} style={{ ...S.btn(gpsLocation?'#0e9f6e':'#1a56db'), width:'100%', fontSize:14 }}>
+                {gpsLocation ? '↻ Update location' : '↻ Retry location'}
+              </button>
+            )}
           </div>
 
-          <button onClick={() => setPage('scan')} style={{ ...S.btn('#1a56db'), width:'100%' }}>Next: Capture Page 1 →</button>
+          <button
+            onClick={() => {
+              if (!docNumber.trim()) { toast('Enter a document number (use the truck number if none)', 'error'); return }
+              setPage('scan')
+            }}
+            disabled={!docNumber.trim()}
+            style={{ ...S.btn('#1a56db'), width:'100%', opacity: docNumber.trim() ? 1 : 0.5 }}>
+            Next: Capture Page 1 →
+          </button>
         </>}
 
         {/* STEP 3: SCAN */}
@@ -807,8 +1017,8 @@ export default function DriverApp({ user, onLogout, toast }) {
           </div>
 
           {/* Submit */}
-          <button onClick={handleSubmit} disabled={submitting} style={{ ...S.btn('#1a56db'), width:'100%', opacity:submitting?0.7:1, fontSize:16 }}>
-            {submitting ? 'Generating PDF & Submitting…' : `📤 Submit ${pages.length} Page${pages.length!==1?'s':''} to Admin`}
+          <button onClick={handleSubmit} style={{ ...S.btn('#1a56db'), width:'100%', fontSize:16 }}>
+            📤 Submit {pages.length} Page{pages.length!==1?'s':''} to Admin
           </button>
         </>}
 
@@ -900,8 +1110,8 @@ function DriverDocDetail({ doc, onBack }) {
   const allPages = doc.pages?.length > 0 ? doc.pages : [{ src:doc.src, corners:doc.corners, filterMode:doc.filterMode, brightness:doc.brightness, contrast:doc.contrast }]
 
   return (
-    <div style={{ minHeight:'100vh', background:'#f1f5f9', maxWidth:isTablet?820:600, margin:'0 auto', fontFamily:'system-ui,sans-serif' }}>
-      <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'20px 16px 18px', position:'sticky', top:0, zIndex:20 }}>
+    <div style={{ height:'100%', overflowY:'auto', WebkitOverflowScrolling:'touch', background:'#f1f5f9', maxWidth:isTablet?820:600, margin:'0 auto', fontFamily:'system-ui,sans-serif' }}>
+      <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'calc(env(safe-area-inset-top) + 8px) 16px 18px', position:'sticky', top:0, zIndex:20 }}>
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
           <button onClick={onBack} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'white', borderRadius:10, padding:'7px 13px', cursor:'pointer', fontSize:16 }}>←</button>
           <div>
@@ -967,6 +1177,42 @@ function DriverDocDetail({ doc, onBack }) {
 
 // ── Pay settlement helpers (module scope) ─────────────────────────────────────
 // Uses the currency the settlement was issued in, not a hardcoded USD.
+// Crisp line icons for the bottom tab bar. Stroke follows the tab's color, so
+// they go white on the active navy pill and grey when inactive.
+function TabIcon({ id, active }) {
+  const c = active ? '#ffffff' : '#94a3b8'
+  const sw = active ? 2.2 : 2
+  if (id === 'list') return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z" />
+      <line x1="9" y1="13" x2="15" y2="13" /><line x1="9" y1="17" x2="13" y2="17" />
+    </svg>
+  )
+  if (id === 'pay') return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.5" />
+      <line x1="6" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="18" y2="12" />
+    </svg>
+  )
+  // settings
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  )
+}
+
+// Small pill button for the document-type filter row.
+function FilterChip({ label, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      border:'none', borderRadius:20, padding:'7px 12px', fontSize:12, fontWeight:700, cursor:'pointer',
+      background: active ? '#1a56db' : '#eef2f7', color: active ? 'white' : '#4b5563',
+    }}>{label}</button>
+  )
+}
+
 function fmtMoney(n, cur) {
   if (n === undefined || n === null || isNaN(n)) return '—'
   return formatMoney(n, cur)
@@ -1016,7 +1262,7 @@ function SettlementDetail({ settlement: st, onBack, onUpdated, toast }) {
 
   return (
     <div style={{ minHeight:'100vh', background:'#f1f5f9', maxWidth:isTablet?720:600, margin:'0 auto', fontFamily:'system-ui,sans-serif' }}>
-      <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'20px 16px 18px', position:'sticky', top:0, zIndex:20 }}>
+      <div style={{ background:'linear-gradient(135deg,#0f172a,#1e3a5f)', padding:'calc(env(safe-area-inset-top) + 8px) 16px 18px', position:'sticky', top:0, zIndex:20 }}>
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
           <button onClick={onBack} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'white', borderRadius:10, padding:'7px 13px', cursor:'pointer', fontSize:16 }}>←</button>
           <div>

@@ -607,7 +607,16 @@ function ManageDriverModal({ driver, onClose, onSaved, toast }) {
   }
   const sendLink = async () => {
     setBusy(true)
-    try { await api.opsSendDriverReset(driver.username); toast(`✓ Reset link sent to ${driver.email}`) }
+    try {
+      const r = await api.opsSendDriverReset(driver.username)
+      if (r.sent) toast(`✓ Reset link sent to ${driver.email}`)
+      else {
+        // Don't claim success when the email never went out — copy the link so
+        // it can be passed on another way.
+        navigator.clipboard?.writeText(r.link || '')
+        toast(`Email failed (${r.emailError || 'unknown'}) — link copied to clipboard`, 'error')
+      }
+    }
     catch (e) { toast(e.message, 'error') }
     setBusy(false)
   }

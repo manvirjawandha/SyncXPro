@@ -37,7 +37,8 @@
     "@capacitor/preferences": "^8.0.0",
     "@capacitor/splash-screen": "^8.0.0",
     "@capacitor/status-bar": "^8.0.0",
-    "@capgo/capacitor-document-scanner": "latest"
+    "@capgo/capacitor-document-scanner": "latest",
+    "capacitor-native-settings": "^7.0.1"
   },
   "devDependencies": {
     "react": "^18.3.1",

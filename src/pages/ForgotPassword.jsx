@@ -126,11 +126,15 @@ function AdminReset({ onBack }) {
   const [loading, setLoading] = useState(false)
 
   const request = async () => {
-    if (!email.trim()) { setErr('Enter your company email'); return }
+    if (!email.trim()) { setErr('Enter your company email or admin username'); return }
     setErr(''); setLoading(true)
     try {
-      await api.adminResetRequest(email.trim())
-      setSent(true) // always succeeds — we don't reveal whether the email exists
+      const r = await api.adminResetRequest(email.trim())
+      // We never reveal whether the account exists — but if the mail service
+      // itself is down/misconfigured, say so rather than showing a false
+      // "check your email".
+      if (r?.serviceError) setErr("We couldn't send the email right now. Please contact support.")
+      else setSent(true)
     } catch (e) { setErr(e.message) }
     setLoading(false)
   }
@@ -140,7 +144,7 @@ function AdminReset({ onBack }) {
       <div style={{ fontSize: 30, marginBottom: 10 }}>📧</div>
       <div style={{ fontSize: 16, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Check your email</div>
       <p style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.6 }}>
-        If <b>{email}</b> matches a company account, we've sent a reset link. Open it to verify a code sent to your
+        If <b>{email}</b> matches a company account, we've sent a reset link to the company email on file. Open it to verify a code sent to your
         company phone, then set a new password. The link expires in 1 hour.
       </p>
     </div>
@@ -149,11 +153,11 @@ function AdminReset({ onBack }) {
   return (
     <>
       <p style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.5, marginBottom: 16 }}>
-        Enter the email on your company profile. We'll send a reset link there. For security, you'll also confirm a
-        code sent to your company phone.
+        Enter the email on your company profile, or your admin username. We'll send a reset link to the company
+        email on file. For security, you'll also confirm a code sent to your company phone.
       </p>
-      <Label>Company email</Label>
-      <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email"
+      <Label>Company email or admin username</Label>
+      <input type="text" inputMode="email" autoCapitalize="none" value={email} onChange={e => setEmail(e.target.value)}
         placeholder="you@company.com" style={{ ...S.input, marginBottom: 14 }} disabled={loading} />
       {err && <ErrText>{err}</ErrText>}
       <button onClick={request} disabled={loading} style={{ ...S.btn('#1a56db'), width: '100%' }}>

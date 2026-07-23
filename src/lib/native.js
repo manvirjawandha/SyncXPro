@@ -82,27 +82,39 @@ async function toDataUrl(img) {
   if (img.startsWith('data:')) return img
   // A long string with no path separators is raw base64.
   if (!img.includes('/') && img.length > 200) return `data:image/jpeg;base64,${img}`
-  // Otherwise it's a native file path/URI — read it through the WebView bridge.
-  const src = Capacitor.convertFileSrc(img)
-  const res = await fetch(src)
-  const blob = await res.blob()
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(r.result)
-    r.onerror = () => reject(new Error('Could not read scanned page'))
-    r.readAsDataURL(blob)
-  })
+  // Otherwise it's a native file path/URI (e.g. file:///.../scan.jpg on iOS) —
+  // read it through the WebView bridge.
+  try {
+    const src = Capacitor.convertFileSrc(img)
+    const res = await fetch(src)
+    if (!res.ok) throw new Error(`fetch ${res.status}`)
+    const blob = await res.blob()
+    return await new Promise((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => resolve(r.result)
+      r.onerror = () => reject(new Error('Could not read scanned page'))
+      r.readAsDataURL(blob)
+    })
+  } catch (e) {
+    console.error('[scanner] toDataUrl failed for', img, e?.message)
+    throw e
+  }
 }
 
 export async function scanDocumentPages(maxPages = 20) {
   const { DocumentScanner } = await import('@capgo/capacitor-document-scanner')
+  // Use the documented default response (image file paths). The current Capgo
+  // plugin returns paths, which toDataUrl() converts via convertFileSrc(). We
+  // dropped the old `croppedImageQuality` option — it isn't part of the current
+  // plugin API and passing unknown options can make the iOS scanner misbehave
+  // (it captures but never resolves, so the camera just reopens).
   const result = await DocumentScanner.scanDocument({
     // iOS (VisionKit) caps a session at 24 pages; clamp to be safe everywhere.
     maxNumDocuments: Math.max(1, Math.min(maxPages, 24)),
     letUserAdjustCrop: true,      // driver can nudge the detected edges
-    responseType: 'base64',       // toDataUrl() also handles file-path responses
-    croppedImageQuality: 90,      // Android only; ignored on iOS
+    responseType: 'imageFilePath',
   })
+  console.log('[scanner] raw result:', JSON.stringify(result)?.slice(0, 300))
   // User backed out of the scanner — not an error, just nothing to add.
   if (result?.status === 'cancel' || !result?.scannedImages?.length) return []
   const pages = []
@@ -110,6 +122,7 @@ export async function scanDocumentPages(maxPages = 20) {
     const dataUrl = await toDataUrl(img)
     if (dataUrl) pages.push(dataUrl)
   }
+  console.log('[scanner] converted pages:', pages.length)
   return pages
 }
 
@@ -137,4 +150,44 @@ export async function onNetworkChange(cb) {
   const { Network } = await import('@capacitor/network')
   const handle = await Network.addListener('networkStatusChange', s => cb(s.connected))
   return () => handle.remove()
+}
+
+// Open the OS Settings page for THIS app, so the driver can flip camera /
+// photo / location permissions. Apps can't toggle iOS permissions directly —
+// deep-linking to Settings is the Apple-sanctioned pattern.
+export async function openAppSettings() {
+  if (!isNative()) { alert('Open your browser or device settings to change permissions.'); return }
+  try {
+    const { App } = await import('@capacitor/app')
+    // Capacitor's App plugin doesn't expose openSettings on all versions;
+    // NativeSettings is the reliable route. Fall back gracefully.
+    try {
+      const { NativeSettings, IOSSettings, AndroidSettings } = await import('capacitor-native-settings')
+      await NativeSettings.open({ optionIOS: IOSSettings.App, optionAndroid: AndroidSettings.ApplicationDetails })
+      return
+    } catch {
+      // Plugin not installed — tell the user how to do it manually.
+      alert('To change permissions, open Settings › SyncX Pro Driver on your device.')
+    }
+  } catch (e) {
+    alert('To change permissions, open your device Settings for SyncX Pro Driver.')
+  }
+}
+
+// Check current status of the permissions we use, for display in Settings.
+export async function checkAppPermissions() {
+  const out = { camera: 'unknown', location: 'unknown', photos: 'unknown' }
+  if (!isNative()) return out
+  try {
+    const { Geolocation } = await import('@capacitor/geolocation')
+    const g = await Geolocation.checkPermissions()
+    out.location = g.location || 'unknown'
+  } catch {}
+  try {
+    const { Camera } = await import('@capacitor/camera')
+    const c = await Camera.checkPermissions()
+    out.camera = c.camera || 'unknown'
+    out.photos = c.photos || 'unknown'
+  } catch {}
+  return out
 }
