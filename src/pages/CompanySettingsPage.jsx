@@ -153,6 +153,14 @@ function DriversSection({ user, notify, wide = false }) {
           </table>
         )}
       </div>
+
+      {/* The desktop table needs its own copy of this modal — it lives in a
+          separate return block from the mobile list, so rendering it only there
+          meant the button did nothing on desktop. */}
+      {resetDriver && (
+        <ResetDriverModal driver={resetDriver} notify={notify}
+          onClose={() => setResetDriver(null)} />
+      )}
     </div>
   )
 
