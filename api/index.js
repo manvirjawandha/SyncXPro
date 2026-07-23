@@ -1616,7 +1616,10 @@ app.post('/api/company/drivers/:username/reset-password', requireAuth, asyncHand
   const admin = await getUser(req.auth.username)
   if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Admin only' })
 
-  const uname = req.params.username
+  // Usernames are stored lowercased everywhere else (creation, login, the ops
+  // routes). Not normalising here meant any username with a capital letter
+  // looked up a doc that doesn't exist and came back "Driver not found".
+  const uname = String(req.params.username).trim().toLowerCase()
   const { newPassword } = req.body
   if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' })
 
