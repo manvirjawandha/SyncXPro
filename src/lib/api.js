@@ -70,6 +70,12 @@ export const api = {
   async opsCreateCompany(payload) { return opsRequest('/ops/companies/create', { method: 'POST', body: JSON.stringify(payload) }) },
   async opsResendActivation(id) { return opsRequest(`/ops/companies/${id}/resend-activation`, { method: 'POST' }) },
   async opsDeleteCompany(id) { return opsRequest(`/ops/companies/${id}`, { method: 'DELETE' }) },
+  async opsGetCompany(id) { return opsRequest(`/ops/companies/${id}`) },
+  async opsUpdateCompany(id, payload) { return opsRequest(`/ops/companies/${id}`, { method: 'PUT', body: JSON.stringify(payload) }) },
+  async opsSetCompanyStatus(id, status) { return opsRequest(`/ops/companies/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }) },
+  async opsResetDriverPassword(username, newPassword) { return opsRequest(`/ops/drivers/${username}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) }) },
+  async opsUpdateDriver(username, payload) { return opsRequest(`/ops/drivers/${username}`, { method: 'PUT', body: JSON.stringify(payload) }) },
+  async opsSendDriverReset(username) { return opsRequest(`/ops/drivers/${username}/send-reset`, { method: 'POST' }) },
 
   // ── Activation (client-facing) ──
   async getActivation(token, company) { return request(`/activate/${token}?company=${company}`) },
@@ -119,4 +125,12 @@ export const api = {
   async adminResetRequest(email) { return request('/auth/reset/admin/request', { method: 'POST', body: JSON.stringify({ email }) }) },
   async adminResetSendCode(token, companyId) { return request('/auth/reset/admin/send-code', { method: 'POST', body: JSON.stringify({ token, companyId }) }) },
   async adminResetConfirm(payload) { return request('/auth/reset/admin/confirm', { method: 'POST', body: JSON.stringify(payload) }) },
+  async driverLinkSendCode(token, driver) { return request('/auth/reset/driver-link/send-code', { method: 'POST', body: JSON.stringify({ token, driver }) }) },
+  async driverLinkConfirm(payload) { return request('/auth/reset/driver-link/confirm', { method: 'POST', body: JSON.stringify(payload) }) },
+
+  // ── Driver self-service profile ──
+  async getDriverProfile() { return request('/driver/profile') },
+  async updateDriverProfile(payload) { return request('/driver/profile', { method: 'PUT', body: JSON.stringify(payload) }) },
+  async driverPhoneRequest(phone) { return request('/driver/profile/phone/request', { method: 'POST', body: JSON.stringify({ phone }) }) },
+  async driverPhoneConfirm(payload) { return request('/driver/profile/phone/confirm', { method: 'POST', body: JSON.stringify(payload) }) },
 }
