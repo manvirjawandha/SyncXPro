@@ -49,6 +49,7 @@ export default function LandingPage() {
               <a href="#how" className="lp-navlink">How it works</a>
               <a href="#routing" className="lp-navlink">Routing</a>
               <a href="#requests" className="lp-navlink">Requests</a>
+              <a href="#pay" className="lp-navlink">Driver pay</a>
               <a href="#twoway" className="lp-navlink">Why SyncX Pro</a>
               <a href="#pricing" className="lp-navlink">Pricing</a>
               <a href="#features" className="lp-navlink">Features</a>
@@ -199,6 +200,41 @@ export default function LandingPage() {
               It appears at the top of their app with everything filled in. They tap, scan, submit —
               and your request flips to <b style={{ color: '#166534' }}>received</b> the moment it lands.
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Pay settlements ───────────────────────────────────────────── */}
+      <section id="pay" style={{ background: SLATE, borderTop: '1px solid #e5e7eb', borderBottom: '1px solid #e5e7eb' }}>
+        <div style={{
+          maxWidth: MAX, margin: '0 auto', padding: isTablet ? '76px 32px' : '52px 20px',
+          display: 'grid', gridTemplateColumns: isTablet ? '0.95fr 1.05fr' : '1fr', gap: isTablet ? 56 : 32, alignItems: 'center',
+        }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', color: SIGNAL, marginBottom: 16 }}>
+              Settle pay without the phone tag
+            </div>
+            <h2 style={{ fontSize: isTablet ? 34 : 26, fontWeight: 800, letterSpacing: -0.8, margin: '0 0 16px' }}>
+              Post the settlement.<br />The driver sees it — and can ask about it.
+            </h2>
+            <p style={{ fontSize: 16, color: MUTED, lineHeight: 1.65, margin: '0 0 16px' }}>
+              Enter the amount and the pay period — we suggest the period from that driver's pay
+              cycle, whether your fleet runs weekly, biweekly, semi-monthly or monthly, with
+              per-driver overrides for the owner-operator who's paid differently.
+            </p>
+            <p style={{ fontSize: 16, color: MUTED, lineHeight: 1.65, margin: '0 0 16px' }}>
+              It appears in the driver's <b>My Pay</b> tab. If a number looks wrong, they raise a
+              query against that settlement instead of calling the office at 6am. Your reply stays
+              attached to the statement it's about, so the whole conversation is still there in
+              three months when someone asks.
+            </p>
+            <p style={{ fontSize: 16, color: MUTED, lineHeight: 1.65, margin: 0 }}>
+              Amounts are shown in your fleet's currency and stamped at the time you post them, so
+              a historic statement never changes under you.
+            </p>
+          </div>
+          <div style={{ order: isTablet ? 0 : 1 }}>
+            <SettlementCard />
           </div>
         </div>
       </section>
@@ -494,6 +530,44 @@ function RoutingFan({ isTablet }) {
       ))}
       <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 14 }}>
         Anything without its own address goes to your default inbox.
+      </div>
+    </div>
+  )
+}
+
+// Marketing visual: a settlement statement with a driver query thread hanging
+// off it. Deliberately static — it illustrates the flow, it isn't live data.
+function SettlementCard() {
+  return (
+    <div style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 18, padding: 20, boxShadow: '0 12px 34px rgba(15,23,42,0.10)' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: '#94a3b8' }}>Pay period</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a', marginTop: 3 }}>Mar 4 – Mar 10</div>
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 20, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>
+          Queried
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, paddingBottom: 16, borderBottom: '1px solid #f1f5f9' }}>
+        <div style={{ fontSize: 30, fontWeight: 800, color: '#0f172a', letterSpacing: -1 }}>$2,450.00</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#94a3b8' }}>USD</div>
+      </div>
+
+      <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ alignSelf: 'flex-start', maxWidth: '88%', background: '#f1f5f9', borderRadius: '14px 14px 14px 4px', padding: '10px 13px' }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: '#475569', marginBottom: 3 }}>Harman · driver</div>
+          <div style={{ fontSize: 13.5, color: '#334155', lineHeight: 1.5 }}>
+            Detroit run on the 6th isn't on here — was that held to next week?
+          </div>
+        </div>
+        <div style={{ alignSelf: 'flex-end', maxWidth: '88%', background: '#1a56db', borderRadius: '14px 14px 4px 14px', padding: '10px 13px' }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: 'rgba(255,255,255,0.75)', marginBottom: 3 }}>Accounting</div>
+          <div style={{ fontSize: 13.5, color: 'white', lineHeight: 1.5 }}>
+            POD came in after cut-off — it's on the next statement. Sorry for the confusion.
+          </div>
+        </div>
       </div>
     </div>
   )
