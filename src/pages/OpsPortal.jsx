@@ -70,10 +70,11 @@ function OpsLogin({ onLogin, toast }) {
 }
 
 function OpsDashboard({ onLogout, toast }) {
-  const [view, setView] = useState('requests') // 'requests' | 'companies' | 'create'
+  const [view, setView] = useState('requests') // 'requests' | 'companies' | 'create' | 'detail'
   const [companies, setCompanies] = useState([])
   const [requests, setRequests] = useState([])
   const [prefill, setPrefill] = useState(null)
+  const [detailId, setDetailId] = useState(null) // company being viewed
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { load() }, [])
@@ -145,13 +146,18 @@ function OpsDashboard({ onLogout, toast }) {
             <RequestsTable requests={requests} onChange={load} toast={toast}
               onCreate={r => { setPrefill(r); setView('create') }} />
           </>
+        ) : view === 'detail' ? (
+          <CompanyDetail companyId={detailId} toast={toast}
+            onBack={() => { setView('companies'); setDetailId(null); load() }}
+            onChanged={load} />
         ) : (
           <>
             <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', margin: '0 0 6px' }}>Companies</h1>
             <p style={{ fontSize: 14, color: '#6b7280', margin: '0 0 20px' }}>
               {companies.length} total{pendingCount > 0 ? ` · ${pendingCount} awaiting activation` : ''}
             </p>
-            <CompaniesTable companies={companies} onChange={load} toast={toast} />
+            <CompaniesTable companies={companies} onChange={load} toast={toast}
+              onOpen={(id) => { setDetailId(id); setView('detail') }} />
           </>
         )}
       </main>
@@ -252,7 +258,7 @@ function RequestsTable({ requests, onChange, onCreate, toast }) {
   )
 }
 
-function CompaniesTable({ companies, onChange, toast }) {
+function CompaniesTable({ companies, onChange, toast, onOpen }) {
   const [busy, setBusy] = useState(null)
 
   const resend = async (c) => {
@@ -293,9 +299,17 @@ function CompaniesTable({ companies, onChange, toast }) {
       <tbody>
         {companies.map(c => {
           const isPending = c.status === 'pending'
+          const isInactive = c.status === 'inactive'
+          const pill = isPending ? { bg:'#fef3c7', fg:'#92400e', label:'Pending activation' }
+            : isInactive ? { bg:'#fee2e2', fg:'#dc2626', label:'Inactive' }
+            : { bg:'#dcfce7', fg:'#166534', label:'Active' }
           return (
             <tr key={c.id} className="ops-row">
-              <td className="ops-td" style={{ fontWeight: 700 }}>{c.name}</td>
+              <td className="ops-td" style={{ fontWeight: 700 }}>
+                <button onClick={() => onOpen?.(c.id)} style={{ background:'none', border:'none', padding:0, fontWeight:700, fontSize:'inherit', color:'#1a56db', cursor:'pointer', textAlign:'left', textDecoration:'underline' }}>
+                  {c.name}
+                </button>
+              </td>
               <td className="ops-td" style={{ fontFamily: 'monospace', fontSize: 13, color: '#1a56db', fontWeight: 700 }}>{c.id}</td>
               <td className="ops-td" style={{ fontFamily: 'monospace', fontSize: 13, color: '#4b5563' }}>{c.adminUsername || '—'}</td>
               <td className="ops-td">
@@ -304,8 +318,8 @@ function CompaniesTable({ companies, onChange, toast }) {
               </td>
               <td className="ops-td" style={{ color: '#6b7280' }}>{c.driverCount}</td>
               <td className="ops-td">
-                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: isPending ? '#fef3c7' : '#dcfce7', color: isPending ? '#92400e' : '#166534', whiteSpace: 'nowrap' }}>
-                  {isPending ? 'Pending activation' : 'Active'}
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: pill.bg, color: pill.fg, whiteSpace: 'nowrap' }}>
+                  {pill.label}
                 </span>
               </td>
               <td className="ops-td" style={{ textAlign: 'right' }}>
@@ -415,3 +429,236 @@ function CreateCompany({ onDone, onCancel, toast, prefill }) {
     </div>
   )
 }
+
+// ── Company detail: edit info, toggle status, manage drivers ─────────────────
+function CompanyDetail({ companyId, onBack, onChanged, toast }) {
+  const [company, setCompany] = useState(null)
+  const [drivers, setDrivers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(false)
+  const [resetDriver, setResetDriver] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const d = await api.opsGetCompany(companyId)
+      setCompany(d.company); setDrivers(d.drivers || [])
+    } catch (e) { toast(e.message, 'error') }
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [companyId])
+
+  const toggleStatus = async () => {
+    const next = company.status === 'inactive' ? 'active' : 'inactive'
+    const verb = next === 'inactive' ? 'mark INACTIVE (blocks all their logins)' : 'reactivate'
+    if (!confirm(`Are you sure you want to ${verb} ${company.name}?`)) return
+    try {
+      await api.opsSetCompanyStatus(companyId, next)
+      toast(next === 'inactive' ? 'Company marked inactive' : 'Company reactivated')
+      load(); onChanged?.()
+    } catch (e) { toast(e.message, 'error') }
+  }
+
+  if (loading) return <div style={{ textAlign:'center', padding:60, color:'#9ca3af' }}>Loading…</div>
+  if (!company) return <div style={{ textAlign:'center', padding:60, color:'#9ca3af' }}>Company not found.</div>
+
+  const isInactive = company.status === 'inactive'
+  const isPending = company.status === 'pending'
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ background:'none', border:'none', color:'#1a56db', cursor:'pointer', fontSize:14, fontWeight:700, padding:0, marginBottom:16 }}>← Back to companies</button>
+
+      {/* Company header + status */}
+      <div style={{ ...S.card(), marginBottom:16 }}>
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:16, flexWrap:'wrap' }}>
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:6 }}>
+              <h1 style={{ fontSize:24, fontWeight:800, color:'#0f172a', margin:0 }}>{company.name}</h1>
+              <span style={{ fontSize:11, fontWeight:700, padding:'3px 10px', borderRadius:20, background: isPending?'#fef3c7':isInactive?'#fee2e2':'#dcfce7', color: isPending?'#92400e':isInactive?'#dc2626':'#166534' }}>
+                {isPending ? 'Pending activation' : isInactive ? 'Inactive' : 'Active'}
+              </span>
+            </div>
+            <div style={{ fontSize:13, color:'#6b7280', fontFamily:'monospace' }}>ID: {company.id} · admin @{company.adminUsername || '—'}</div>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => setEditing(true)} style={{ background:'#eff6ff', color:'#1a56db', border:'none', borderRadius:10, padding:'9px 16px', fontSize:13, fontWeight:700, cursor:'pointer' }}>Edit info</button>
+            {!isPending && (
+              <button onClick={toggleStatus} style={{ background: isInactive?'#dcfce7':'#fef3c7', color: isInactive?'#166534':'#92400e', border:'none', borderRadius:10, padding:'9px 16px', fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                {isInactive ? 'Reactivate' : 'Mark inactive'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:14, marginTop:18, paddingTop:18, borderTop:'1px solid #f1f5f9' }}>
+          <Detail label="Contact email" value={company.contactEmail || '—'} />
+          <Detail label="Contact phone" value={company.contactPhone || '—'} />
+          <Detail label="Drivers" value={String(drivers.length)} />
+          <Detail label="Currency" value={company.currency || 'USD'} />
+        </div>
+      </div>
+
+      {editing && (
+        <EditCompanyModal company={company} onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); load(); onChanged?.() }} toast={toast} />
+      )}
+
+      {/* Drivers */}
+      <div style={{ ...S.card() }}>
+        <div style={{ fontSize:16, fontWeight:800, color:'#0f172a', marginBottom:14 }}>Drivers ({drivers.length})</div>
+        {drivers.length === 0 ? (
+          <div style={{ color:'#9ca3af', fontSize:14, padding:'20px 0', textAlign:'center' }}>No drivers yet.</div>
+        ) : (
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <thead><tr>
+              <th className="ops-th">Name</th><th className="ops-th">Username</th>
+              <th className="ops-th">Email</th><th className="ops-th">Phone</th>
+              <th className="ops-th" style={{ width:120 }}></th>
+            </tr></thead>
+            <tbody>
+              {drivers.map(d => (
+                <tr key={d.username} className="ops-row">
+                  <td className="ops-td" style={{ fontWeight:700 }}>{d.name}</td>
+                  <td className="ops-td" style={{ fontFamily:'monospace', fontSize:13, color:'#4b5563' }}>@{d.username}</td>
+                  <td className="ops-td" style={{ fontSize:13 }}>{d.email || '—'}</td>
+                  <td className="ops-td" style={{ fontSize:13, fontFamily:'monospace' }}>{d.phone || '—'}</td>
+                  <td className="ops-td" style={{ textAlign:'right' }}>
+                    <button onClick={() => setResetDriver(d)} style={{ background:'#eff6ff', color:'#1a56db', border:'none', borderRadius:8, padding:'6px 12px', fontSize:12, fontWeight:700, cursor:'pointer' }}>Manage</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {resetDriver && (
+        <ManageDriverModal driver={resetDriver} onClose={() => setResetDriver(null)}
+          onSaved={() => { setResetDriver(null); load() }} toast={toast} />
+      )}
+    </div>
+  )
+}
+
+function Detail({ label, value }) {
+  return (
+    <div>
+      <div style={{ fontSize:11, fontWeight:700, color:'#9ca3af', textTransform:'uppercase', letterSpacing:0.5, marginBottom:3 }}>{label}</div>
+      <div style={{ fontSize:14, color:'#0f172a', fontWeight:600 }}>{value}</div>
+    </div>
+  )
+}
+
+function EditCompanyModal({ company, onClose, onSaved, toast }) {
+  const [name, setName] = useState(company.name || '')
+  const [email, setEmail] = useState(company.contactEmail || '')
+  const [phone, setPhone] = useState(company.contactPhone || '')
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    if (!name.trim()) { toast('Company name required', 'error'); return }
+    setBusy(true)
+    try {
+      await api.opsUpdateCompany(company.id, { name: name.trim(), contactEmail: email.trim(), contactPhone: phone.trim() })
+      toast('✓ Company updated'); onSaved()
+    } catch (e) { toast(e.message, 'error') }
+    setBusy(false)
+  }
+
+  return (
+    <ModalShell title="Edit company" onClose={onClose}>
+      <L>Company name</L>
+      <input value={name} onChange={e => setName(e.target.value)} style={{ ...S.input, marginBottom:12 }} disabled={busy} />
+      <L>Contact email</L>
+      <input type="email" value={email} onChange={e => setEmail(e.target.value)} style={{ ...S.input, marginBottom:12 }} disabled={busy} />
+      <L>Contact phone</L>
+      <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} style={{ ...S.input, marginBottom:18 }} disabled={busy} />
+      <div style={{ display:'flex', gap:10 }}>
+        <button onClick={onClose} disabled={busy} style={cancelBtnOps}>Cancel</button>
+        <button onClick={save} disabled={busy} style={{ ...S.btn('#1a56db'), flex:1 }}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
+    </ModalShell>
+  )
+}
+
+// Manage a driver: reset password directly, edit email/phone, or email a
+// self-service reset link (driver then verifies via OTP to their phone).
+function ManageDriverModal({ driver, onClose, onSaved, toast }) {
+  const [tab, setTab] = useState('edit') // edit | password
+  const [name, setName] = useState(driver.name || '')
+  const [email, setEmail] = useState(driver.email || '')
+  const [phone, setPhone] = useState(driver.phone || '')
+  const [pw, setPw] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const saveInfo = async () => {
+    setBusy(true)
+    try { await api.opsUpdateDriver(driver.username, { name: name.trim(), email: email.trim(), phone: phone.trim() }); toast('✓ Driver updated'); onSaved() }
+    catch (e) { toast(e.message, 'error') }
+    setBusy(false)
+  }
+  const setPassword = async () => {
+    if (pw.length < 6) { toast('Password: at least 6 characters', 'error'); return }
+    setBusy(true)
+    try { await api.opsResetDriverPassword(driver.username, pw); toast(`✓ Password set for ${driver.name}`); onSaved() }
+    catch (e) { toast(e.message, 'error') }
+    setBusy(false)
+  }
+  const sendLink = async () => {
+    setBusy(true)
+    try { await api.opsSendDriverReset(driver.username); toast(`✓ Reset link sent to ${driver.email}`) }
+    catch (e) { toast(e.message, 'error') }
+    setBusy(false)
+  }
+
+  return (
+    <ModalShell title={`Manage ${driver.name}`} onClose={onClose}>
+      <div style={{ display:'flex', gap:6, background:'#f1f5f9', borderRadius:10, padding:4, marginBottom:16 }}>
+        {[['edit','Edit info'],['password','Password']].map(([id,label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ flex:1, padding:'8px', borderRadius:8, border:'none', cursor:'pointer', fontSize:13, fontWeight:700, background: tab===id?'white':'transparent', color: tab===id?'#1a56db':'#6b7280' }}>{label}</button>
+        ))}
+      </div>
+
+      {tab === 'edit' ? (
+        <>
+          <L>Name</L>
+          <input value={name} onChange={e => setName(e.target.value)} style={{ ...S.input, marginBottom:12 }} disabled={busy} />
+          <L>Email</L>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="driver@example.com" style={{ ...S.input, marginBottom:12 }} disabled={busy} />
+          <L>Phone</L>
+          <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+1 555 123 4567" style={{ ...S.input, marginBottom:18 }} disabled={busy} />
+          <button onClick={saveInfo} disabled={busy} style={{ ...S.btn('#1a56db'), width:'100%' }}>{busy ? 'Saving…' : 'Save info'}</button>
+        </>
+      ) : (
+        <>
+          <L>Set a new password directly</L>
+          <input type="text" value={pw} onChange={e => setPw(e.target.value)} placeholder="At least 6 characters" style={{ ...S.input, marginBottom:12 }} disabled={busy} />
+          <button onClick={setPassword} disabled={busy} style={{ ...S.btn('#1a56db'), width:'100%', marginBottom:18 }}>{busy ? 'Setting…' : 'Set password'}</button>
+
+          <div style={{ borderTop:'1px solid #f1f5f9', paddingTop:16 }}>
+            <div style={{ fontSize:13, color:'#6b7280', marginBottom:10, lineHeight:1.5 }}>
+              Or email the driver a reset link. They'll verify a code sent to their phone, then choose their own password.
+              {!driver.email && <span style={{ color:'#dc2626', display:'block', marginTop:4 }}>No email on file — add one in "Edit info" first.</span>}
+            </div>
+            <button onClick={sendLink} disabled={busy || !driver.email} style={{ ...S.btn('#0e9f6e'), width:'100%', opacity: driver.email?1:0.5 }}>{busy ? 'Sending…' : 'Email reset link'}</button>
+          </div>
+        </>
+      )}
+    </ModalShell>
+  )
+}
+
+function ModalShell({ title, onClose, children }) {
+  return (
+    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(15,23,42,0.5)', display:'flex', alignItems:'center', justifyContent:'center', padding:20, zIndex:60 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:'white', borderRadius:16, padding:24, width:'100%', maxWidth:400, maxHeight:'90vh', overflowY:'auto' }}>
+        <div style={{ fontSize:17, fontWeight:800, color:'#111827', marginBottom:16 }}>{title}</div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+const L = ({ children }) => <div style={{ fontSize:12, fontWeight:700, color:'#6b7280', marginBottom:5 }}>{children}</div>
+const cancelBtnOps = { flex:1, background:'#f1f5f9', color:'#374151', border:'none', borderRadius:10, padding:'12px', fontSize:14, fontWeight:700, cursor:'pointer' }
