@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist-driver/
+ios/
+android/
+.DS_Store
+.env
+*.log
