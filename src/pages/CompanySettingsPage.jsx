@@ -138,7 +138,7 @@ function DriversSection({ user, notify, wide = false }) {
                     <PayCycleSelect driver={d} onSaved={loadDrivers} notify={notify} />
                   </td>
                   <td className="sx-td" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button onClick={() => setResetDriver(d)} disabled={loading}
+                    <button onClick={() => setResetDriver(d)}
                       style={{ background: '#eff6ff', color: '#1a56db', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginRight: 6 }}>
                       Reset password
                     </button>
@@ -177,7 +177,7 @@ function DriversSection({ user, notify, wide = false }) {
               <div style={{ marginTop: 6 }}><PayCycleSelect driver={d} onSaved={loadDrivers} notify={notify} compact /></div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <button onClick={() => setResetDriver(d)} disabled={loading}
+              <button onClick={() => setResetDriver(d)}
                 style={{ background: '#eff6ff', color: '#1a56db', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                 Reset password
               </button>
